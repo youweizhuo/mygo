@@ -10,7 +10,6 @@ import (
 	gopackages "golang.org/x/tools/go/packages"
 
 	"mygo/internal/diag"
-	llpackages "mygo/third_party/llgo/packages"
 )
 
 // LoadConfig configures how source files should be loaded before SSA
@@ -32,25 +31,36 @@ func LoadPackages(cfg LoadConfig, reporter *diag.Reporter) ([]*gopackages.Packag
 	fset := token.NewFileSet()
 	buildFlags := buildTagFlag(cfg.BuildTags)
 
+	dir := workingDir(cfg.Sources[0])
+	if dir != "" {
+		if absDir, err := filepath.Abs(dir); err == nil {
+			dir = absDir
+		}
+	}
+
+	goCache, goModCache := localCacheDirs()
+	env := append(os.Environ(),
+		"GOOS=linux",
+		"GOARCH=amd64",
+		"GOCACHE="+goCache,
+		"GOMODCACHE="+goModCache,
+	)
+
 	loadCfg := &gopackages.Config{
 		Mode:  gopackages.NeedName | gopackages.NeedSyntax | gopackages.NeedFiles | gopackages.NeedCompiledGoFiles | gopackages.NeedTypes | gopackages.NeedTypesInfo | gopackages.NeedImports | gopackages.NeedDeps | gopackages.NeedModule | gopackages.NeedTypesSizes,
 		Fset:  fset,
-		Env:   append(os.Environ(), "GOOS=linux", "GOARCH=amd64"),
-		Dir:   workingDir(cfg.Sources[0]),
+		Env:   env,
 		Tests: false,
+	}
+	if dir != "" {
+		loadCfg.Dir = dir
 	}
 
 	if len(buildFlags) > 0 {
 		loadCfg.BuildFlags = buildFlags
 	}
 
-	patterns, err := sourcePatterns(cfg.Sources)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	deduper := llpackages.NewDeduper()
-	pkgs, err := llpackages.LoadEx(deduper, nil, loadCfg, patterns...)
+	pkgs, err := gopackages.Load(loadCfg, ".")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -70,24 +80,6 @@ func LoadPackages(cfg LoadConfig, reporter *diag.Reporter) ([]*gopackages.Packag
 	}
 
 	return pkgs, fset, nil
-}
-
-func sourcePatterns(sources []string) ([]string, error) {
-	patterns := make([]string, 0, len(sources))
-	for _, src := range sources {
-		if src == "" {
-			continue
-		}
-		abs, err := filepath.Abs(src)
-		if err != nil {
-			return nil, fmt.Errorf("resolve path %q: %w", src, err)
-		}
-		patterns = append(patterns, "file="+abs)
-	}
-	if len(patterns) == 0 {
-		return nil, fmt.Errorf("no valid source files provided")
-	}
-	return patterns, nil
 }
 
 func buildTagFlag(tags []string) []string {
@@ -110,4 +102,17 @@ func workingDir(sample string) string {
 		return ""
 	}
 	return dir
+}
+
+func localCacheDirs() (string, string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	root := filepath.Join(cwd, ".cache")
+	goCache := filepath.Join(root, "go-build")
+	goModCache := filepath.Join(root, "gomod")
+	_ = os.MkdirAll(goCache, 0o755)
+	_ = os.MkdirAll(goModCache, 0o755)
+	return goCache, goModCache
 }

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 
+	"golang.org/x/tools/go/ssa"
+
 	"mygo/internal/diag"
 	"mygo/internal/frontend"
 	"mygo/internal/ir"
+	"mygo/internal/mlir"
 )
 
 func main() {
@@ -48,23 +51,33 @@ func runCompile(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	_ = target
 
-	if fs.NArg() < 1 {
+	if fs.NArg() == 0 {
 		fs.Usage()
-		return fmt.Errorf("compile command requires a Go source file")
+		return fmt.Errorf("compile command requires at least one Go source file")
 	}
 
-	input := fs.Arg(0)
+	inputs := fs.Args()
+	result, err := prepareProgram(inputs, *diagFormat)
+	if err != nil {
+		return err
+	}
 
-	fmt.Fprintf(os.Stdout, "mygo compile placeholder\n")
-	fmt.Fprintf(os.Stdout, "  input: %s\n", input)
-	fmt.Fprintf(os.Stdout, "  emit: %s\n", *emit)
-	fmt.Fprintf(os.Stdout, "  output: %s\n", *output)
-	fmt.Fprintf(os.Stdout, "  target: %s\n", *target)
-	fmt.Fprintf(os.Stdout, "  diag-format: %s\n", *diagFormat)
-	fmt.Fprintf(os.Stdout, "phase 1 implementation pending – this only configures the CLI\n")
+	design, err := ir.BuildDesign(result.program, result.reporter)
+	if err != nil {
+		return err
+	}
 
-	return nil
+	switch *emit {
+	case "mlir":
+		return mlir.Emit(design, *output)
+	case "verilog":
+		return fmt.Errorf("verilog emission is not implemented yet")
+	default:
+		return fmt.Errorf("unknown emit format: %s", *emit)
+	}
+
 }
 
 func printGlobalUsage() {
@@ -91,25 +104,12 @@ func runDumpSSA(args []string) error {
 		return fmt.Errorf("dump-ssa requires at least one Go source file")
 	}
 
-	reporter := diag.NewReporter(os.Stderr, *diagFormat)
-	cfg := frontend.LoadConfig{
-		Sources: fs.Args(),
-	}
-
-	pkgs, _, err := frontend.LoadPackages(cfg, reporter)
-	if err != nil {
-		return err
-	}
-	if reporter.HasErrors() {
-		return fmt.Errorf("errors reported while loading packages")
-	}
-
-	_, ssaPkgs, err := frontend.BuildSSA(pkgs, reporter)
+	result, err := prepareProgram(fs.Args(), *diagFormat)
 	if err != nil {
 		return err
 	}
 
-	for _, pkg := range ssaPkgs {
+	for _, pkg := range result.ssaPkgs {
 		if pkg == nil {
 			continue
 		}
@@ -132,24 +132,46 @@ func runDumpIR(args []string) error {
 		return fmt.Errorf("dump-ir requires at least one Go source file")
 	}
 
-	reporter := diag.NewReporter(os.Stderr, *diagFormat)
-	cfg := frontend.LoadConfig{Sources: fs.Args()}
-
-	pkgs, _, err := frontend.LoadPackages(cfg, reporter)
+	result, err := prepareProgram(fs.Args(), *diagFormat)
 	if err != nil {
 		return err
 	}
 
-	prog, _, err := frontend.BuildSSA(pkgs, reporter)
-	if err != nil {
-		return err
-	}
-
-	design, err := ir.BuildDesign(prog, reporter)
+	design, err := ir.BuildDesign(result.program, result.reporter)
 	if err != nil {
 		return err
 	}
 
 	ir.Dump(design, os.Stdout)
 	return nil
+}
+
+type frontendResult struct {
+	reporter *diag.Reporter
+	program  *ssa.Program
+	ssaPkgs  []*ssa.Package
+}
+
+func prepareProgram(sources []string, diagFormat string) (*frontendResult, error) {
+	reporter := diag.NewReporter(os.Stderr, diagFormat)
+	cfg := frontend.LoadConfig{Sources: sources}
+	pkgs, _, err := frontend.LoadPackages(cfg, reporter)
+	if err != nil {
+		return nil, err
+	}
+	if reporter.HasErrors() {
+		return nil, fmt.Errorf("errors reported while loading packages")
+	}
+	prog, ssaPkgs, err := frontend.BuildSSA(pkgs, reporter)
+	if err != nil {
+		return nil, err
+	}
+	if reporter.HasErrors() {
+		return nil, fmt.Errorf("errors reported during SSA construction")
+	}
+	return &frontendResult{
+		reporter: reporter,
+		program:  prog,
+		ssaPkgs:  ssaPkgs,
+	}, nil
 }
