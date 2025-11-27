@@ -7,6 +7,7 @@ import (
 
 	"mygo/internal/diag"
 	"mygo/internal/frontend"
+	"mygo/internal/ir"
 )
 
 func main() {
@@ -27,6 +28,8 @@ func run(args []string) error {
 		return runCompile(args[1:])
 	case "dump-ssa":
 		return runDumpSSA(args[1:])
+	case "dump-ir":
+		return runDumpIR(args[1:])
 	default:
 		printGlobalUsage()
 		return fmt.Errorf("unknown command: %s", args[0])
@@ -71,6 +74,7 @@ func printGlobalUsage() {
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  compile    Compile Go source to MLIR or Verilog (stub)\n")
 	fmt.Fprintf(os.Stderr, "  dump-ssa   Load Go sources and dump SSA form\n")
+	fmt.Fprintf(os.Stderr, "  dump-ir    Translate SSA into the MyGO hardware IR and dump it\n")
 }
 
 func runDumpSSA(args []string) error {
@@ -112,5 +116,40 @@ func runDumpSSA(args []string) error {
 		pkg.WriteTo(os.Stdout)
 	}
 
+	return nil
+}
+
+func runDumpIR(args []string) error {
+	fs := flag.NewFlagSet("dump-ir", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	diagFormat := fs.String("diag-format", "text", "diagnostic output format (text|json)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		fs.Usage()
+		return fmt.Errorf("dump-ir requires at least one Go source file")
+	}
+
+	reporter := diag.NewReporter(os.Stderr, *diagFormat)
+	cfg := frontend.LoadConfig{Sources: fs.Args()}
+
+	pkgs, _, err := frontend.LoadPackages(cfg, reporter)
+	if err != nil {
+		return err
+	}
+
+	prog, _, err := frontend.BuildSSA(pkgs, reporter)
+	if err != nil {
+		return err
+	}
+
+	design, err := ir.BuildDesign(prog, reporter)
+	if err != nil {
+		return err
+	}
+
+	ir.Dump(design, os.Stdout)
 	return nil
 }
