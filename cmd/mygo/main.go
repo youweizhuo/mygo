@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
@@ -33,6 +38,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "compile":
 		return runCompile(args[1:])
+	case "sim":
+		return runSim(args[1:])
 	case "dump-ssa":
 		return runDumpSSA(args[1:])
 	case "dump-ir":
@@ -110,6 +117,7 @@ func printGlobalUsage() {
 	fmt.Fprintf(os.Stderr, "  mygo <command> [options]\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  compile    Compile Go source to MLIR or Verilog\n")
+	fmt.Fprintf(os.Stderr, "  sim        Compile to Verilog and run a simulator\n")
 	fmt.Fprintf(os.Stderr, "  dump-ssa   Load Go sources and dump SSA form\n")
 	fmt.Fprintf(os.Stderr, "  dump-ir    Translate SSA into the MyGO hardware IR and dump it\n")
 	fmt.Fprintf(os.Stderr, "  lint       Run validation-only checks (e.g. concurrency rules)\n")
@@ -260,4 +268,122 @@ func validateProgram(result *frontendResult) error {
 		return err
 	}
 	return nil
+}
+
+func runSim(args []string) error {
+	fs := flag.NewFlagSet("sim", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	diagFormat := fs.String("diag-format", "text", "diagnostic output format (text|json)")
+	circtOpt := fs.String("circt-opt", "", "path to circt-opt (optional)")
+	circtTranslate := fs.String("circt-translate", "", "path to circt-translate (optional)")
+	circtPipeline := fs.String("circt-pipeline", "", "circt-opt --pass-pipeline string (optional)")
+	circtMLIR := fs.String("circt-mlir", "", "path to dump the MLIR handed to CIRCT (optional)")
+	verilogOut := fs.String("verilog-out", "", "path to write the emitted Verilog bundle (optional)")
+	keepArtifacts := fs.Bool("keep-artifacts", false, "keep temporary artifacts generated during simulation")
+	simulator := fs.String("simulator", "", "simulator executable to run (e.g. verilator, iverilog, or a wrapper script)")
+	simArgs := fs.String("sim-args", "", "additional simulator arguments (space-separated)")
+	expectPath := fs.String("expect", "", "path to file containing expected simulator stdout (optional)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		fs.Usage()
+		return fmt.Errorf("sim requires at least one Go source file")
+	}
+
+	inputs := fs.Args()
+	result, err := prepareProgram(inputs, *diagFormat)
+	if err != nil {
+		return err
+	}
+
+	if err := validateProgram(result); err != nil {
+		return err
+	}
+
+	design, err := ir.BuildDesign(result.program, result.reporter)
+	if err != nil {
+		return err
+	}
+
+	if err := runDefaultPasses(design, result.reporter); err != nil {
+		return err
+	}
+
+	tempDir, err := os.MkdirTemp("", "mygo-sim-*")
+	if err != nil {
+		return err
+	}
+	if !*keepArtifacts && *verilogOut == "" {
+		defer os.RemoveAll(tempDir)
+	}
+
+	svPath := *verilogOut
+	if svPath == "" {
+		svPath = filepath.Join(tempDir, "design.sv")
+	} else if err := os.MkdirAll(filepath.Dir(svPath), 0o755); err != nil {
+		return err
+	}
+
+	opts := backend.Options{
+		CIRCTOptPath:       *circtOpt,
+		CIRCTTranslatePath: *circtTranslate,
+		PassPipeline:       *circtPipeline,
+		DumpMLIRPath:       *circtMLIR,
+		KeepTemps:          *keepArtifacts,
+	}
+
+	if err := backend.EmitVerilog(design, svPath, opts); err != nil {
+		return err
+	}
+
+	if *simulator == "" {
+		fmt.Fprintf(os.Stdout, "Verilog written to %s\n", svPath)
+		return nil
+	}
+
+	simulatorArgs := parseSimArgs(*simArgs)
+	simulatorArgs = append(simulatorArgs, svPath)
+	cmd := exec.Command(*simulator, simulatorArgs...)
+
+	var stdoutBuf bytes.Buffer
+	if *expectPath != "" {
+		cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	} else {
+		cmd.Stdout = os.Stdout
+	}
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("simulator failed: %w", err)
+	}
+
+	if *expectPath != "" {
+		want, err := os.ReadFile(*expectPath)
+		if err != nil {
+			return fmt.Errorf("read expect file: %w", err)
+		}
+		got := stdoutBuf.Bytes()
+		if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace(want)) {
+			return fmt.Errorf("simulator output mismatch\nexpected:\n%s\nactual:\n%s", string(want), stdoutBuf.String())
+		}
+	}
+
+	return nil
+}
+
+func parseSimArgs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	fields := strings.Fields(raw)
+	result := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f != "" {
+			result = append(result, f)
+		}
+	}
+	return result
 }
