@@ -4,7 +4,7 @@ Weeks **8-10** lift the prototype into a control-flow-aware compiler that can sc
 
 ---
 
-## Objectives
+## Objectives (Completed)
 
 1. **Structured control flow:** Translate SSA `if`, `phi`, and statically bounded `for` loops into IR blocks with explicit predicates/state.
 2. **Pipeline scheduling:** Map goroutines/processes onto a deterministic multi-stage schedule that mirrors `argo_3stage` behavior (ready/valid, back-pressure).
@@ -40,6 +40,13 @@ Weeks **8-10** lift the prototype into a control-flow-aware compiler that can sc
 - Update `README.md` and `README_PHASE3.md` with control-flow semantics, supported loop patterns, and new CLI flags (if any).
 - Extend `mygo lint` with `--controlflow` mode to check for unsupported `if`/`for` patterns early.
 - Document scheduling rules (number of stages, handshake expectations) with diagrams referencing `third_party/argo2verilog/src/verilog/argo_3stage.v`.
+
+### Completion Snapshot
+
+- **Control-flow IR** now lowers SSA `if`/`phi`/bounded `for` constructs into explicit `BasicBlock` graphs with `comb.mux` generation, while the SSA builder enforces deterministic naming for later passes.
+- **Scheduler metadata** assigns every goroutine to an ordered pipeline stage (`Process.Stage`), and channels expose occupancy + handshake annotations that land in MLIR via `mygo.channel.*` markers.
+- **Validation** promotes AST-level loop inspection so counted `for` loops with compile-time bounds are accepted while dynamic loops and unsupported constructs still error with clear diagnostics.
+- **End-to-end coverage** integrates the original Argo samples (`pipeline1`, `pipeline2`, `router_csp`) under `test/e2e/<case>` with golden MLIR outputs automatically diffed during CI, alongside control-flow unit suites (`go test ./internal/ir -run Control`).
 
 ---
 
