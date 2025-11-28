@@ -4,6 +4,26 @@ Weeks **5-7** focus on tightening the typed core while elevating goroutines and 
 
 ---
 
+## Status
+
+✅ **Phase 2 complete (Week 7 exit criteria met).** Highlights:
+
+- Width inference (`internal/passes/widthinfer.go`) propagates widths/signedness, inserts diagnostics for truncation, and runs by default inside the CLI.
+- `validate.CheckProgram` plus the new `mygo lint --concurrency` command enforce deterministic goroutine/channel rules ahead of IR building.
+- Goroutines become named IR processes with explicit channel metadata (`Send`/`Recv`/`Spawn` ops, FIFO depths, endpoint tracking) that the MLIR emitter surfaces via `mygo.channel.*` stubs.
+- E2E samples were reorganized under `test/e2e/<case>/main.go`, including the new `channel_basic` workload that proves go/send/receive lowering.
+- README docs now include concrete MLIR snippets and instructions for running both unit (`go test ./internal/...`) and scenario (`go test ./test/e2e`) suites.
+
+To reproduce the final state:
+
+```bash
+go test ./...
+go run ./cmd/mygo lint --concurrency test/e2e/channel_basic/main.go
+go run ./cmd/mygo compile -emit=mlir -o channel_basic.mlir test/e2e/channel_basic/main.go
+```
+
+---
+
 ## Objectives
 
 1. **Type soundness:** automatically infer widths/signedness, reject lossy mixes, and surface precise diagnostics.

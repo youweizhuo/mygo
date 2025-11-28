@@ -1323,6 +1323,14 @@ We now have an end-to-end path from `simple.go` to MLIR, including the CLI, SSA 
 - Diagnostics: source spans for channel misuse plus JSON output for editor integrations.
 - Tests: extend `test/e2e` with the Argo channel programs and diff the emitted MLIR against expectations.
 
+**Phase 2 completion snapshot**
+
+- Width inference runs automatically during every `compile`/`dump-ir` invocation and surfaces truncation/signedness issues with precise diagnostics.
+- The `validate.CheckProgram` + `mygo lint --concurrency` path enforces the goroutine/channel contract (static goroutine targets, constant-depth channels, no `select`/maps/recursion, etc.).
+- Goroutines now materialize as distinct IR processes (`ir.Process`) with explicit `Channel` objects, `Send`/`Recv` ops, and `mygo.channel.*` MLIR stubs so downstream passes have deterministic FIFO metadata.
+- The e2e harness assembles real Go packages under `test/e2e/<case>` and drives `mygo compile`; the new `channel_basic` sample proves that go/send/receive flows translate end-to-end.
+- Documentation includes command examples (flag ordering, MLIR snippets) plus the newly added `mygo lint` command so contributors know how to exercise the toolchain.
+
 ### Phase 3: Control Flow & Streaming Pipelines (Weeks 8-10)
 
 **Goal:** Support conditional logic, bounded loops, and schedule goroutines into explicit hardware pipelines.
@@ -1556,6 +1564,13 @@ func TestProgramsCompileToMLIR(t *testing.T) {
 1. `go test ./test/e2e -run TestProgramsCompile` compiles every sample through the real CLI and catches regressions in SSA validation, passes, and MLIR emission.
 2. To add a new workload, create `test/e2e/<name>/main.go` (plus any golden MLIR/Verilog if needed) and add the directory name to the list inside `TestProgramsCompileToMLIR`.
 3. Golden comparisons (when we add them in later phases) should live next to the sample folder so the test can diff `*.mlir` outputs after running the compiler.
+
+**Expected artifacts today**
+
+| Scenario | MLIR command & snippet | Verilog status |
+|----------|-----------------------|----------------|
+| `test/e2e/simple` | `mygo compile -emit=mlir -o simple.mlir test/e2e/simple/main.go` produces:<br/>```mlir<br/>module {<br/>  hw.module @main(%clk: i1, %rst: i1) {<br/>    %c0 = hw.constant 1 : i32<br/>    %c1 = hw.constant 2 : i16<br/>    %v2 = comb.sext %c0 : i32 to i64<br/>    %v3 = comb.sext %c1 : i16 to i64<br/>    %v4 = comb.add %v2, %v3 : i64<br/>    hw.output<br/>  }<br/>}<br/>``` | `mygo compile -emit=verilog …` currently returns `verilog emission is not implemented yet` (expected for Phase 2). |
+| `test/e2e/channel_basic` | `mygo compile -emit=mlir -o channel_basic.mlir test/e2e/channel_basic/main.go` produces:<br/>```mlir<br/>module {<br/>  hw.module @main(%clk: i1, %rst: i1) {<br/>    %c0 = hw.constant 1 : i32<br/>    %c1 = hw.constant 5 : i32<br/>    // channel t0 depth=4 type=i32<br/>    // channel t1 depth=4 type=i32<br/>    mygo.process.spawn "worker"() channels ["t0", "t1"]<br/>    mygo.channel.send "t0"(%c1) : i32<br/>    %v2 = mygo.channel.recv "t1" : i32<br/>    %v3 = mygo.channel.recv "t0" : i32<br/>    %v4 = comb.add %v3, %c0 : i32<br/>    mygo.channel.send "t1"(%v4) : i32<br/>    hw.output<br/>  }<br/>}<br/>``` | Same as above; Verilog backend is deferred to Phase 4. |
 
 ### 7.3 CI Pipeline
 
