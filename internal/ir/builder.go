@@ -25,8 +25,12 @@ func BuildDesign(prog *ssa.Program, reporter *diag.Reporter) (*Design, error) {
 	}
 
 	builder := &builder{
-		reporter: reporter,
-		signals:  make(map[ssa.Value]*Signal),
+		reporter:      reporter,
+		signals:       make(map[ssa.Value]*Signal),
+		processes:     make(map[*ssa.Function]*Process),
+		channels:      make(map[ssa.Value]*Channel),
+		paramSignals:  make(map[*ssa.Parameter]*Signal),
+		paramChannels: make(map[*ssa.Parameter]*Channel),
 	}
 
 	module := builder.buildModule(mainFn)
@@ -43,12 +47,14 @@ func BuildDesign(prog *ssa.Program, reporter *diag.Reporter) (*Design, error) {
 }
 
 type builder struct {
-	reporter  *diag.Reporter
-	module    *Module
-	signals   map[ssa.Value]*Signal
-	processes map[*ssa.Function]*Process
-	channels  map[ssa.Value]*Channel
-	tempID    int
+	reporter      *diag.Reporter
+	module        *Module
+	signals       map[ssa.Value]*Signal
+	processes     map[*ssa.Function]*Process
+	channels      map[ssa.Value]*Channel
+	paramSignals  map[*ssa.Parameter]*Signal
+	paramChannels map[*ssa.Parameter]*Channel
+	tempID        int
 }
 
 func (b *builder) buildModule(fn *ssa.Function) *Module {
@@ -60,8 +66,6 @@ func (b *builder) buildModule(fn *ssa.Function) *Module {
 		Source:   fn.Pos(),
 	}
 	b.module = mod
-	b.processes = make(map[*ssa.Function]*Process)
-	b.channels = make(map[ssa.Value]*Channel)
 	b.buildProcess(fn)
 
 	return mod
@@ -77,6 +81,7 @@ func (b *builder) buildProcess(fn *ssa.Function) *Process {
 	}
 	b.processes[fn] = proc
 	b.module.Processes = append(b.module.Processes, proc)
+	b.bindFunctionParams(fn)
 
 	for _, block := range fn.Blocks {
 		if block == nil {
@@ -142,6 +147,11 @@ func (b *builder) translateInstr(proc *Process, bb *BasicBlock, instr ssa.Instru
 			Dest:  dest,
 			Value: source,
 		})
+	case *ssa.ChangeType:
+		source := b.signalForValue(v.X)
+		if source != nil {
+			b.signals[v] = source
+		}
 	case *ssa.MakeChan:
 		b.handleMakeChan(v)
 	case *ssa.Send:
@@ -182,6 +192,44 @@ func (b *builder) handleAlloc(a *ssa.Alloc) {
 	}
 	b.module.Signals[sig.Name] = sig
 	b.signals[a] = sig
+}
+
+func (b *builder) bindFunctionParams(fn *ssa.Function) {
+	if fn == nil {
+		return
+	}
+	for _, param := range fn.Params {
+		if param == nil {
+			continue
+		}
+		if ch, ok := b.paramChannels[param]; ok {
+			b.channels[param] = ch
+			continue
+		}
+		if sig, ok := b.paramSignals[param]; ok {
+			b.signals[param] = sig
+			continue
+		}
+		if isChannelType(param.Type()) {
+			ch := &Channel{
+				Name:   b.uniqueName(param.Name()),
+				Type:   channelElemType(param.Type()),
+				Depth:  1,
+				Source: param.Pos(),
+			}
+			b.module.Channels[ch.Name] = ch
+			b.channels[param] = ch
+			continue
+		}
+		sig := &Signal{
+			Name:   defaultName(param.Name(), b.uniqueName("param")),
+			Type:   signalType(param.Type()),
+			Kind:   Wire,
+			Source: param.Pos(),
+		}
+		b.module.Signals[sig.Name] = sig
+		b.signals[param] = sig
+	}
 }
 
 func (b *builder) handleMakeChan(mc *ssa.MakeChan) {
@@ -247,17 +295,59 @@ func (b *builder) handleGo(proc *Process, bb *BasicBlock, stmt *ssa.Go) {
 		b.reporter.Warning(stmt.Pos(), "goroutine target has no static callee")
 		return
 	}
+	b.bindCallArguments(callee, stmt.Call.Args)
 	target := b.buildProcess(callee)
 	var args []*Signal
-	for _, arg := range stmt.Call.Args {
+	var chanArgs []*Channel
+	var params *types.Tuple
+	if sig := stmt.Call.Signature(); sig != nil {
+		params = sig.Params()
+	}
+	for idx, arg := range stmt.Call.Args {
+		var paramType types.Type
+		if params != nil && idx < params.Len() {
+			paramType = params.At(idx).Type()
+		}
+		if paramType != nil && isChannelType(paramType) {
+			if ch := b.channelForValueSilent(arg); ch != nil {
+				chanArgs = append(chanArgs, ch)
+			}
+			continue
+		}
 		if sig := b.signalForValue(arg); sig != nil {
 			args = append(args, sig)
 		}
 	}
 	bb.Ops = append(bb.Ops, &SpawnOperation{
-		Callee: target,
-		Args:   args,
+		Callee:   target,
+		Args:     args,
+		ChanArgs: chanArgs,
 	})
+}
+
+func (b *builder) bindCallArguments(fn *ssa.Function, args []ssa.Value) {
+	if fn == nil {
+		return
+	}
+	params := fn.Params
+	for i := 0; i < len(params) && i < len(args); i++ {
+		param := params[i]
+		arg := args[i]
+		paramType := param.Type()
+		if isChannelType(paramType) {
+			if ch := b.channelForValueSilent(arg); ch != nil {
+				if _, exists := b.paramChannels[param]; !exists {
+					b.paramChannels[param] = ch
+				}
+			}
+			continue
+		}
+		if sig := b.signalForValue(arg); sig != nil {
+			if _, exists := b.paramSignals[param]; !exists {
+				b.paramSignals[param] = sig
+			}
+		}
+	}
 }
 func (b *builder) buildConstSignal(c *ssa.Const) *Signal {
 	sig := &Signal{
@@ -280,6 +370,11 @@ func (b *builder) signalForValue(v ssa.Value) *Signal {
 		sig := b.buildConstSignal(val)
 		b.signals[v] = sig
 		return sig
+	case *ssa.ChangeType:
+		if src := b.signalForValue(val.X); src != nil {
+			b.signals[v] = src
+			return src
+		}
 	case *ssa.IndexAddr, *ssa.MakeInterface, *ssa.Slice, *ssa.MakeChan:
 		return nil
 	}
@@ -288,10 +383,22 @@ func (b *builder) signalForValue(v ssa.Value) *Signal {
 }
 
 func (b *builder) channelForValue(v ssa.Value) *Channel {
+	return b.lookupChannel(v, true)
+}
+
+func (b *builder) channelForValueSilent(v ssa.Value) *Channel {
+	return b.lookupChannel(v, false)
+}
+
+func (b *builder) lookupChannel(v ssa.Value, warn bool) *Channel {
 	if ch, ok := b.channels[v]; ok {
 		return ch
 	}
-	if v != nil {
+	switch val := v.(type) {
+	case *ssa.ChangeType:
+		return b.lookupChannel(val.X, warn)
+	}
+	if warn && v != nil {
 		b.reporter.Warning(v.Pos(), fmt.Sprintf("no channel mapping for value %T", v))
 	}
 	return nil
@@ -401,6 +508,26 @@ func widthForBasic(b *types.Basic) (int, bool) {
 	default:
 		return 32, true
 	}
+}
+
+func isChannelType(t types.Type) bool {
+	_, ok := t.Underlying().(*types.Chan)
+	return ok
+}
+
+func channelElemType(t types.Type) *SignalType {
+	if ch, ok := t.Underlying().(*types.Chan); ok {
+		return signalType(ch.Elem())
+	}
+	return &SignalType{Width: 1, Signed: false}
+}
+
+func defaultName(candidate, fallback string) string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return fallback
+	}
+	return candidate
 }
 
 func extractConstValue(c *ssa.Const) interface{} {

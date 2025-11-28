@@ -271,8 +271,9 @@ func (RecvOperation) isOperation() {}
 
 // SpawnOperation represents a goroutine launch.
 type SpawnOperation struct {
-	Callee *Process
-	Args   []*Signal
+	Callee   *Process
+	Args     []*Signal
+	ChanArgs []*Channel
 }
 
 func (SpawnOperation) isOperation() {}

@@ -169,18 +169,28 @@ func (p *printer) emitOperation(op ir.Operation, proc *ir.Process) {
 	case *ir.SendOperation:
 		value := p.valueRef(o.Value)
 		p.printIndent()
-		fmt.Fprintf(p.w, "mygo.channel.send \"%s\"(%s) : %s\n", o.Channel.Name, value, typeString(o.Value.Type))
+		fmt.Fprintf(p.w, "mygo.channel.send \"%s\"(%s) : %s\n", sanitize(o.Channel.Name), value, typeString(o.Value.Type))
 	case *ir.RecvOperation:
 		dest := p.bindSSA(o.Dest)
 		p.printIndent()
-		fmt.Fprintf(p.w, "%s = mygo.channel.recv \"%s\" : %s\n", dest, o.Channel.Name, typeString(o.Dest.Type))
+		fmt.Fprintf(p.w, "%s = mygo.channel.recv \"%s\" : %s\n", dest, sanitize(o.Channel.Name), typeString(o.Dest.Type))
 	case *ir.SpawnOperation:
 		args := make([]string, 0, len(o.Args))
 		for _, arg := range o.Args {
 			args = append(args, p.valueRef(arg))
 		}
+		chanNames := make([]string, 0, len(o.ChanArgs))
+		for _, ch := range o.ChanArgs {
+			chanNames = append(chanNames, fmt.Sprintf("\"%s\"", sanitize(ch.Name)))
+		}
+		argList := strings.Join(args, ", ")
+		chanList := strings.Join(chanNames, ", ")
 		p.printIndent()
-		fmt.Fprintf(p.w, "mygo.process.spawn \"%s\"(%s)\n", o.Callee.Name, strings.Join(args, ", "))
+		if len(chanNames) > 0 {
+			fmt.Fprintf(p.w, "mygo.process.spawn \"%s\"(%s) channels [%s]\n", sanitize(o.Callee.Name), argList, chanList)
+		} else {
+			fmt.Fprintf(p.w, "mygo.process.spawn \"%s\"(%s)\n", sanitize(o.Callee.Name), argList)
+		}
 	default:
 		// skip unknown operations for now
 	}

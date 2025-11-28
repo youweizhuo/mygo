@@ -113,7 +113,18 @@ func renderOp(op Operation) string {
 		for _, arg := range o.Args {
 			argNames = append(argNames, arg.Name)
 		}
-		return fmt.Sprintf("go %s(%s)", o.Callee.Name, strings.Join(argNames, ", "))
+		chanNames := make([]string, 0, len(o.ChanArgs))
+		for _, ch := range o.ChanArgs {
+			chanNames = append(chanNames, ch.Name)
+		}
+		segments := make([]string, 0, 2)
+		if len(argNames) > 0 {
+			segments = append(segments, strings.Join(argNames, ", "))
+		}
+		if len(chanNames) > 0 {
+			segments = append(segments, "ch:"+strings.Join(chanNames, ", "))
+		}
+		return fmt.Sprintf("go %s(%s)", o.Callee.Name, strings.Join(segments, "; "))
 	default:
 		return fmt.Sprintf("<unknown op %T>", op)
 	}
