@@ -371,12 +371,13 @@ mygo/
 # Compile Go to MLIR
 mygo compile -emit=mlir -o simple.mlir simple.go
 
-# Compile Go to Verilog
-mygo compile -emit=verilog -o simple.sv simple.go
+# Compile Go to Verilog (requires your FIFO implementation when channels are present)
+mygo compile -emit=verilog --fifo-src=/path/to/my_fifo.sv -o simple.sv simple.go
 
 # Compile to Verilog and drive a simulator (auto-detects expected.sim next to the source)
 mygo sim --circt-translate=/path/to/circt-translate \
          --simulator=/path/to/verilator-wrapper.sh \
+         --fifo-src=/path/to/my_fifo.sv \
          test/e2e/pipeline1/main.go
 
 # Dump SSA for debugging
@@ -389,11 +390,12 @@ mygo lint simple.go
 mygo dump-ir simple.go
 
 # Go's `flag` package stops parsing after the first positional argument, so
-# always specify CLI flags (e.g. `-emit`, `-o`, `-diag-format`) before the Go
+# always specify CLI flags (e.g. `-emit`, `-o`, `-diag-format`, `--fifo-src`) before the Go
 # source files.
 
-# When emitting Verilog, the backend also writes `<output>_fifos.sv`; include both
-# files when running Verilator or any downstream simulator.
+# When emitting Verilog, the backend copies your FIFO implementation next to the
+# generated design and reports the extra `.sv` path(s); pass all of them to Verilator
+# or any downstream simulator.
 ```
 
 **Global Flags:**
@@ -403,6 +405,7 @@ mygo dump-ir simple.go
 - `--circt-opt=<path>` / `--circt-translate=<path>`: Override the CIRCT binaries invoked by the Verilog backend.
 - `--circt-pipeline=<passes>`: Pass pipeline string forwarded to `circt-opt`.
 - `--circt-mlir=<path>`: Dump the MLIR handed to CIRCT (useful for debugging).
+- `--fifo-src=<path>`: FIFO implementation source file copied alongside emitted Verilog when the design contains channels.
 - `--simulator=<bin>` / `--sim-args="<args>"`: Simulator executable (e.g. a Verilator wrapper) and extra arguments for the `sim` command.
 - `--expect=<path>`: Optional golden stdout file the `sim` command compares the simulator output against.
 

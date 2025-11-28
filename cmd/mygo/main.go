@@ -64,6 +64,7 @@ func runCompile(args []string) error {
 	circtTranslate := fs.String("circt-translate", "", "path to circt-translate (optional, falls back to PATH lookup)")
 	circtPipeline := fs.String("circt-pipeline", "", "circt-opt --pass-pipeline string (optional)")
 	circtMLIR := fs.String("circt-mlir", "", "path to dump the MLIR handed to CIRCT (optional)")
+	fifoSrc := fs.String("fifo-src", "", "path to FIFO implementation source (required when channels are present)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -93,6 +94,7 @@ func runCompile(args []string) error {
 	if err := runDefaultPasses(design, result.reporter); err != nil {
 		return err
 	}
+	hasChannels := designHasChannels(design)
 
 	switch *emit {
 	case "mlir":
@@ -101,11 +103,15 @@ func runCompile(args []string) error {
 		if *output == "" || *output == "-" {
 			return fmt.Errorf("verilog emission requires -o when auxiliary FIFO sources are generated")
 		}
+		if hasChannels && *fifoSrc == "" {
+			return fmt.Errorf("verilog emission requires --fifo-src when design contains channels")
+		}
 		opts := backend.Options{
 			CIRCTOptPath:       *circtOpt,
 			CIRCTTranslatePath: *circtTranslate,
 			PassPipeline:       *circtPipeline,
 			DumpMLIRPath:       *circtMLIR,
+			FIFOSource:         *fifoSrc,
 		}
 		res, err := backend.EmitVerilog(design, *output, opts)
 		if err != nil {
@@ -294,6 +300,7 @@ func runSim(args []string) error {
 	simulator := fs.String("simulator", "", "simulator executable to run (e.g. a Verilator wrapper script)")
 	simArgs := fs.String("sim-args", "", "additional simulator arguments (space-separated)")
 	expectPath := fs.String("expect", "", "path to file containing expected simulator stdout (optional)")
+	fifoSrc := fs.String("fifo-src", "", "path to FIFO implementation source (required when channels are present)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -331,6 +338,8 @@ func runSim(args []string) error {
 		return err
 	}
 
+	hasChannels := designHasChannels(design)
+
 	tempDir, err := os.MkdirTemp("", "mygo-sim-*")
 	if err != nil {
 		return err
@@ -352,6 +361,11 @@ func runSim(args []string) error {
 		PassPipeline:       *circtPipeline,
 		DumpMLIRPath:       *circtMLIR,
 		KeepTemps:          *keepArtifacts,
+		FIFOSource:         *fifoSrc,
+	}
+
+	if hasChannels && *fifoSrc == "" {
+		return fmt.Errorf("simulation requires --fifo-src when design contains channels")
 	}
 
 	res, err := backend.EmitVerilog(design, svPath, opts)
@@ -412,6 +426,21 @@ func parseSimArgs(raw string) []string {
 		}
 	}
 	return result
+}
+
+func designHasChannels(design *ir.Design) bool {
+	if design == nil {
+		return false
+	}
+	for _, module := range design.Modules {
+		if module == nil {
+			continue
+		}
+		if len(module.Channels) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultSimExpectPath(input string) string {

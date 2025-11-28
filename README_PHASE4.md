@@ -27,7 +27,7 @@ Weeks **11-13** bring the MyGO prototype from MLIR-only outputs to a Verilog-cap
 - Document how to point the backend at an alternate lowering (Hand-shake) without changing the CLI surface.
 
 ### 2. FIFO & IP Library
-- Translate the existing channel metadata into concrete FIFO instantiations (`argo_queue` equivalent) with depth/width parameters and emit them as reusable `hw.module`/`sv.module` definitions (instantiated via `hw.instance` in Option 3, or bound through ESI/Handshake later).
+- Translate the existing channel metadata into concrete FIFO instantiations (`argo_queue` equivalent) with depth/width parameters. Instead of embedding the implementation, require users to pass `--fifo-src` so known-good IP (kept outside this repo) can be copied alongside the generated Verilog.
 - Provide stubs for other shared blocks (e.g., balanced routers, ready/valid shims) and ensure they can either be emitted inline or referenced as external SV sources.
 - Add configuration knobs for FIFO implementation style (simple regs vs. vendor RAM) to prepare for future phases.
 
@@ -38,8 +38,8 @@ Weeks **11-13** bring the MyGO prototype from MLIR-only outputs to a Verilog-cap
 - Extend `test/e2e` so each workload can optionally specify a `.sim.out` golden that the CI sim step compares against.
 
 ### 4. CLI & Documentation Updates
-- Update `README.md` + `README_PHASE4.md` with Verilog/simulation instructions, environment requirements (CIRCT build, simulator install), and troubleshooting steps. Provide a worked example using `mygo sim --simulator <wrapper> --expect <trace> test/e2e/pipeline1/main.go`.
-- Document new CLI flags (`--circt-opt`, `--circt-translate`, `--circt-pipeline`, `--circt-mlir`, `--simulator`, `--sim-args`, `--expect`) and add quickstart guides for both MLIR and Verilog flows.
+- Update `README.md` + `README_PHASE4.md` with Verilog/simulation instructions, environment requirements (CIRCT build, simulator install), and troubleshooting steps. Provide a worked example using `mygo sim --simulator <wrapper> --fifo-src <fifo> --expect <trace> test/e2e/pipeline1/main.go`.
+- Document new CLI flags (`--circt-opt`, `--circt-translate`, `--circt-pipeline`, `--circt-mlir`, `--fifo-src`, `--simulator`, `--sim-args`, `--expect`) and add quickstart guides for both MLIR and Verilog flows.
 - Keep a running list of supported Argo workloads and their golden artifacts (MLIR, SV, simulation logs).
 
 ---

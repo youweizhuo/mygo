@@ -151,8 +151,16 @@ module mygo_fifo_i32_d1();
 endmodule
 EOS
 `)
+	fifoSrc := filepath.Join(tmp, "fifo_impl.sv")
+	fifoBody := "// external fifo\nmodule mygo_fifo_i32_d1();\nendmodule\n"
+	if err := os.WriteFile(fifoSrc, []byte(fifoBody), 0o644); err != nil {
+		t.Fatalf("write fifo src: %v", err)
+	}
 	out := filepath.Join(tmp, "design.sv")
-	res, err := EmitVerilog(design, out, Options{CIRCTTranslatePath: translate})
+	res, err := EmitVerilog(design, out, Options{
+		CIRCTTranslatePath: translate,
+		FIFOSource:         fifoSrc,
+	})
 	if err != nil {
 		t.Fatalf("EmitVerilog failed: %v", err)
 	}
@@ -170,8 +178,29 @@ EOS
 	if err != nil {
 		t.Fatalf("read aux: %v", err)
 	}
-	if !strings.Contains(string(auxData), "module mygo_fifo_i32_d1") {
-		t.Fatalf("expected fifo implementation, got:\n%s", string(auxData))
+	aux := string(auxData)
+	if aux != fifoBody {
+		t.Fatalf("expected fifo implementation copy, got:\n%s", aux)
+	}
+}
+
+func TestEmitVerilogErrorsWithoutFifoSource(t *testing.T) {
+	requirePosix(t)
+	design := testDesignWithChannel()
+	tmp := t.TempDir()
+	translate := writeScript(t, tmp, "translate.sh", `#!/bin/sh
+set -e
+cat <<'EOS'
+module main();
+endmodule
+module mygo_fifo_i32_d1();
+endmodule
+EOS
+`)
+	out := filepath.Join(tmp, "design.sv")
+	_, err := EmitVerilog(design, out, Options{CIRCTTranslatePath: translate})
+	if err == nil || !strings.Contains(err.Error(), "fifo source") {
+		t.Fatalf("expected fifo source error, got %v", err)
 	}
 }
 

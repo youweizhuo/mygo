@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,6 +28,9 @@ type Options struct {
 	DumpMLIRPath string
 	// KeepTemps preserves the intermediate directory on disk for debugging.
 	KeepTemps bool
+	// FIFOSource points to a user-provided FIFO implementation that will be
+	// copied next to the emitted Verilog when channels are present.
+	FIFOSource string
 }
 
 // Result lists the artifacts produced during Verilog emission.
@@ -95,7 +97,7 @@ func EmitVerilog(design *ir.Design, outputPath string, opts Options) (Result, er
 		return Result{}, err
 	}
 
-	auxPath, err := stripAndWriteFifos(outputPath, fifoInfos)
+	auxPath, err := stripAndWriteFifos(outputPath, fifoInfos, opts.FIFOSource)
 	if err != nil {
 		return Result{}, err
 	}
@@ -205,9 +207,12 @@ func collectFifoDescriptors(design *ir.Design) []fifoDescriptor {
 	return result
 }
 
-func stripAndWriteFifos(mainPath string, fifos []fifoDescriptor) (string, error) {
+func stripAndWriteFifos(mainPath string, fifos []fifoDescriptor, fifoSource string) (string, error) {
 	if len(fifos) == 0 {
 		return "", nil
+	}
+	if fifoSource == "" {
+		return "", fmt.Errorf("backend: fifo source required when channels are present")
 	}
 	data, err := os.ReadFile(mainPath)
 	if err != nil {
@@ -226,13 +231,11 @@ func stripAndWriteFifos(mainPath string, fifos []fifoDescriptor) (string, error)
 	}
 
 	auxPath := strings.TrimSuffix(mainPath, filepath.Ext(mainPath)) + "_fifos.sv"
-	var buf bytes.Buffer
-	buf.WriteString("// Auto-generated FIFO implementations.\n")
-	for _, fifo := range fifos {
-		buf.WriteString(fifoTemplate(fifo))
-		buf.WriteString("\n")
+	src, err := os.ReadFile(fifoSource)
+	if err != nil {
+		return "", fmt.Errorf("backend: read fifo source: %w", err)
 	}
-	if err := os.WriteFile(auxPath, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(auxPath, src, 0o644); err != nil {
 		return "", fmt.Errorf("backend: write fifo sources: %w", err)
 	}
 	return auxPath, nil
@@ -254,85 +257,6 @@ func removeModuleBlock(content, moduleName string) (string, bool) {
 		end++
 	}
 	return content[:start] + content[end:], true
-}
-
-func fifoTemplate(desc fifoDescriptor) string {
-	width := desc.width
-	if width <= 0 {
-		width = 1
-	}
-	depth := desc.depth
-	if depth <= 0 {
-		depth = 1
-	}
-	rangeStr := verilogRange(width)
-	builder := &strings.Builder{}
-	fmt.Fprintf(builder, "module %s (\n", desc.name)
-	fmt.Fprintf(builder, "  input wire clk,\n")
-	fmt.Fprintf(builder, "  input wire rst,\n")
-	fmt.Fprintf(builder, "  inout wire %sin_data,\n", rangeStr)
-	fmt.Fprintf(builder, "  inout wire in_valid,\n")
-	fmt.Fprintf(builder, "  inout wire in_ready,\n")
-	fmt.Fprintf(builder, "  inout wire %sout_data,\n", rangeStr)
-	fmt.Fprintf(builder, "  inout wire out_valid,\n")
-	fmt.Fprintf(builder, "  inout wire out_ready\n")
-	fmt.Fprintf(builder, ");\n")
-	fmt.Fprintf(builder, "  localparam integer WIDTH = %d;\n", width)
-	fmt.Fprintf(builder, "  localparam integer DEPTH = %d;\n", depth)
-	fmt.Fprintf(builder, "  localparam integer ADDR_BITS = (DEPTH <= 1) ? 1 : $clog2(DEPTH);\n")
-	fmt.Fprintf(builder, "  localparam integer COUNT_BITS = (DEPTH <= 1) ? 1 : $clog2(DEPTH + 1);\n")
-	fmt.Fprintf(builder, "  reg [WIDTH-1:0] mem [0:DEPTH-1];\n")
-	fmt.Fprintf(builder, "  reg [ADDR_BITS-1:0] wptr;\n")
-	fmt.Fprintf(builder, "  reg [ADDR_BITS-1:0] rptr;\n")
-	fmt.Fprintf(builder, "  reg [COUNT_BITS-1:0] count;\n")
-	fmt.Fprintf(builder, "  wire ready_int = (count < DEPTH);\n")
-	fmt.Fprintf(builder, "  wire valid_int = (count != 0);\n")
-	fmt.Fprintf(builder, "  wire push = in_valid & ready_int;\n")
-	fmt.Fprintf(builder, "  wire pop = valid_int & out_ready;\n")
-	fmt.Fprintf(builder, "  assign in_ready = ready_int;\n")
-	fmt.Fprintf(builder, "  assign out_valid = valid_int;\n")
-	fmt.Fprintf(builder, "  assign out_data = mem[rptr];\n")
-	fmt.Fprintf(builder, "  always @(posedge clk) begin\n")
-	fmt.Fprintf(builder, "    if (rst) begin\n")
-	fmt.Fprintf(builder, "      wptr <= {ADDR_BITS{1'b0}};\n")
-	fmt.Fprintf(builder, "      rptr <= {ADDR_BITS{1'b0}};\n")
-	fmt.Fprintf(builder, "      count <= {COUNT_BITS{1'b0}};\n")
-	fmt.Fprintf(builder, "    end else begin\n")
-	fmt.Fprintf(builder, "      if (push) begin\n")
-	fmt.Fprintf(builder, "        mem[wptr] <= in_data;\n")
-	fmt.Fprintf(builder, "        if (DEPTH == 1) begin\n")
-	fmt.Fprintf(builder, "          wptr <= {ADDR_BITS{1'b0}};\n")
-	fmt.Fprintf(builder, "        end else if (wptr == DEPTH - 1) begin\n")
-	fmt.Fprintf(builder, "          wptr <= {ADDR_BITS{1'b0}};\n")
-	fmt.Fprintf(builder, "        end else begin\n")
-	fmt.Fprintf(builder, "          wptr <= wptr + 1'b1;\n")
-	fmt.Fprintf(builder, "        end\n")
-	fmt.Fprintf(builder, "      end\n")
-	fmt.Fprintf(builder, "      if (pop) begin\n")
-	fmt.Fprintf(builder, "        if (DEPTH == 1) begin\n")
-	fmt.Fprintf(builder, "          rptr <= {ADDR_BITS{1'b0}};\n")
-	fmt.Fprintf(builder, "        end else if (rptr == DEPTH - 1) begin\n")
-	fmt.Fprintf(builder, "          rptr <= {ADDR_BITS{1'b0}};\n")
-	fmt.Fprintf(builder, "        end else begin\n")
-	fmt.Fprintf(builder, "          rptr <= rptr + 1'b1;\n")
-	fmt.Fprintf(builder, "        end\n")
-	fmt.Fprintf(builder, "      end\n")
-	fmt.Fprintf(builder, "      case ({push, pop})\n")
-	fmt.Fprintf(builder, "        2'b10: count <= count + 1'b1;\n")
-	fmt.Fprintf(builder, "        2'b01: count <= count - 1'b1;\n")
-	fmt.Fprintf(builder, "        default: count <= count;\n")
-	fmt.Fprintf(builder, "      endcase\n")
-	fmt.Fprintf(builder, "    end\n")
-	fmt.Fprintf(builder, "  end\n")
-	fmt.Fprintf(builder, "endmodule\n")
-	return builder.String()
-}
-
-func verilogRange(width int) string {
-	if width <= 1 {
-		return ""
-	}
-	return fmt.Sprintf("[%d:0] ", width-1)
 }
 
 func fifoModuleName(elemType string, depth int) string {

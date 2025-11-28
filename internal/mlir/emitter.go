@@ -26,24 +26,24 @@ func Emit(design *ir.Design, outputPath string) error {
 	}
 
 	em := &emitter{
-		w:        w,
-		fifoDefs: make(map[string]*fifoInfo),
+		w:         w,
+		fifoDecls: make(map[string]*fifoInfo),
 	}
 	fmt.Fprintln(w, "module {")
 	em.indent++
 	for _, module := range design.Modules {
 		em.emitModule(module)
 	}
-	em.emitFifoDefinitions()
+	em.emitFifoExterns()
 	em.indent--
 	fmt.Fprintln(w, "}")
 	return nil
 }
 
 type emitter struct {
-	w        io.Writer
-	indent   int
-	fifoDefs map[string]*fifoInfo
+	w         io.Writer
+	indent    int
+	fifoDecls map[string]*fifoInfo
 }
 
 func (e *emitter) emitModule(module *ir.Module) {
@@ -144,7 +144,6 @@ func (e *emitter) emitChannelWires(module *ir.Module) map[*ir.Channel]*channelWi
 		e.printIndent()
 		fmt.Fprintf(e.w, "%s = sv.wire : !hw.inout<i1>\n", wireSet.readReady)
 		e.emitChannelMetadata(ch)
-		e.ensureFifoModule(ch)
 	}
 	return wires
 }
@@ -161,10 +160,11 @@ func (e *emitter) emitChannelFifos(module *ir.Module, wires map[*ir.Channel]*cha
 	for _, name := range names {
 		ch := module.Channels[name]
 		wireSet := wires[ch]
-		fifo := e.ensureFifoModule(ch)
 		elemInout := inoutTypeString(ch.Type)
+		moduleName := fifoModuleName(ch)
+		e.recordFifo(moduleName, ch)
 		e.printIndent()
-		fmt.Fprintf(e.w, "hw.instance \"%s_fifo\" @%s(", sanitize(ch.Name), fifo.moduleName)
+		fmt.Fprintf(e.w, "hw.instance \"%s_fifo\" @%s(", sanitize(ch.Name), moduleName)
 		args := []string{
 			"%clk",
 			"%rst",
@@ -365,9 +365,8 @@ type channelWireSet struct {
 }
 
 type fifoInfo struct {
-	key        string
 	moduleName string
-	elemType   string
+	elemType   *ir.SignalType
 	depth      int
 }
 
@@ -898,64 +897,49 @@ func sanitize(name string) string {
 	return b.String()
 }
 
-func (e *emitter) ensureFifoModule(ch *ir.Channel) *fifoInfo {
+func (e *emitter) recordFifo(moduleName string, ch *ir.Channel) {
 	if ch == nil {
-		return nil
-	}
-	if ch.Depth <= 0 {
-		ch.Depth = 1
-	}
-	elemType := typeString(ch.Type)
-	key := fmt.Sprintf("%s_d%d", elemType, ch.Depth)
-	if info, ok := e.fifoDefs[key]; ok {
-		return info
-	}
-	name := fmt.Sprintf("mygo.fifo_%s_d%d", sanitize(elemType), ch.Depth)
-	info := &fifoInfo{
-		key:        key,
-		moduleName: name,
-		elemType:   elemType,
-		depth:      ch.Depth,
-	}
-	e.fifoDefs[key] = info
-	return info
-}
-
-func (e *emitter) emitFifoDefinitions() {
-	if len(e.fifoDefs) == 0 {
 		return
 	}
-	keys := make([]string, 0, len(e.fifoDefs))
-	for key := range e.fifoDefs {
-		keys = append(keys, key)
+	if _, ok := e.fifoDecls[moduleName]; ok {
+		return
 	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		info := e.fifoDefs[key]
-		elemInout := fmt.Sprintf("!hw.inout<%s>", info.elemType)
+	info := &fifoInfo{
+		moduleName: moduleName,
+		elemType:   ch.Type,
+		depth:      ch.Depth,
+	}
+	e.fifoDecls[moduleName] = info
+}
+
+func (e *emitter) emitFifoExterns() {
+	if len(e.fifoDecls) == 0 {
+		return
+	}
+	names := make([]string, 0, len(e.fifoDecls))
+	for name := range e.fifoDecls {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		info := e.fifoDecls[name]
+		elemInout := inoutTypeString(info.elemType)
 		e.printIndent()
-		fmt.Fprintf(e.w, "hw.module @%s(%%clk: i1, %%rst: i1, %%in_data: %s, %%in_valid: !hw.inout<i1>, %%in_ready: !hw.inout<i1>, %%out_data: %s, %%out_valid: !hw.inout<i1>, %%out_ready: !hw.inout<i1>) {\n",
+		fmt.Fprintf(e.w, "hw.module @%s(%%clk: i1, %%rst: i1, %%in_data: %s, %%in_valid: !hw.inout<i1>, %%in_ready: !hw.inout<i1>, %%out_data: %s, %%out_valid: !hw.inout<i1>, %%out_ready: !hw.inout<i1>) external\n",
 			info.moduleName,
 			elemInout,
 			elemInout,
 		)
-		e.indent++
-		e.printIndent()
-		fmt.Fprintf(e.w, "// simple passthrough FIFO depth=%d\n", info.depth)
-		e.printIndent()
-		fmt.Fprintf(e.w, "%%write_data = sv.read_inout %%in_data : %s\n", elemInout)
-		e.printIndent()
-		fmt.Fprintf(e.w, "%%write_valid = sv.read_inout %%in_valid : !hw.inout<i1>\n")
-		e.printIndent()
-		fmt.Fprintf(e.w, "sv.assign %%out_data, %%write_data : %s, %s\n", elemInout, info.elemType)
-		e.printIndent()
-		fmt.Fprintf(e.w, "sv.assign %%out_valid, %%write_valid : !hw.inout<i1>, i1\n")
-		e.printIndent()
-		fmt.Fprintf(e.w, "%%const_ready = hw.constant true : i1\n")
-		e.printIndent()
-		fmt.Fprintf(e.w, "sv.assign %%in_ready, %%const_ready : !hw.inout<i1>, i1\n")
-		e.indent--
-		e.printIndent()
-		fmt.Fprintln(e.w, "}")
 	}
+}
+
+func fifoModuleName(ch *ir.Channel) string {
+	if ch == nil {
+		return "mygo_fifo_i1_d1"
+	}
+	depth := ch.Depth
+	if depth <= 0 {
+		depth = 1
+	}
+	return fmt.Sprintf("mygo_fifo_%s_d%d", sanitize(typeString(ch.Type)), depth)
 }
