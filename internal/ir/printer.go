@@ -92,6 +92,9 @@ func dumpProcesses(module *Module, w io.Writer) {
 			for _, op := range block.Ops {
 				fmt.Fprintf(w, "      %s\n", renderOp(op))
 			}
+			if block.Terminator != nil {
+				fmt.Fprintf(w, "      %s\n", renderTerminator(block.Terminator))
+			}
 		}
 	}
 }
@@ -104,6 +107,18 @@ func renderOp(op Operation) string {
 		return fmt.Sprintf("%s := convert(%s)", o.Dest.Name, o.Value.Name)
 	case *BinOperation:
 		return fmt.Sprintf("%s := %s %s %s", o.Dest.Name, o.Left.Name, binOpSymbol(o.Op), o.Right.Name)
+	case *CompareOperation:
+		return fmt.Sprintf("%s := cmp(%s %s %s)", o.Dest.Name, o.Left.Name, compareSymbol(o.Predicate), o.Right.Name)
+	case *NotOperation:
+		return fmt.Sprintf("%s := not %s", o.Dest.Name, o.Value.Name)
+	case *MuxOperation:
+		return fmt.Sprintf("%s := mux(%s ? %s : %s)", o.Dest.Name, signalName(o.Cond), signalName(o.TrueValue), signalName(o.FalseValue))
+	case *PhiOperation:
+		values := make([]string, 0, len(o.Incomings))
+		for _, in := range o.Incomings {
+			values = append(values, fmt.Sprintf("%s:%s", blockName(in.Block), signalName(in.Value)))
+		}
+		return fmt.Sprintf("%s := phi[%s]", o.Dest.Name, strings.Join(values, ", "))
 	case *SendOperation:
 		return fmt.Sprintf("send %s <- %s", o.Channel.Name, o.Value.Name)
 	case *RecvOperation:
@@ -130,6 +145,19 @@ func renderOp(op Operation) string {
 	}
 }
 
+func renderTerminator(term Terminator) string {
+	switch t := term.(type) {
+	case *BranchTerminator:
+		return fmt.Sprintf("br %s ? %s : %s", signalName(t.Cond), blockName(t.True), blockName(t.False))
+	case *JumpTerminator:
+		return fmt.Sprintf("jump %s", blockName(t.Target))
+	case *ReturnTerminator:
+		return "return"
+	default:
+		return fmt.Sprintf("<unknown terminator %T>", term)
+	}
+}
+
 func binOpSymbol(op BinOp) string {
 	switch op {
 	case Add:
@@ -144,6 +172,33 @@ func binOpSymbol(op BinOp) string {
 		return "|"
 	case Xor:
 		return "^"
+	default:
+		return "?"
+	}
+}
+
+func compareSymbol(pred ComparePredicate) string {
+	switch pred {
+	case CompareEQ:
+		return "=="
+	case CompareNE:
+		return "!="
+	case CompareSLT:
+		return "<s"
+	case CompareSLE:
+		return "<=s"
+	case CompareSGT:
+		return ">s"
+	case CompareSGE:
+		return ">=s"
+	case CompareULT:
+		return "<u"
+	case CompareULE:
+		return "<=u"
+	case CompareUGT:
+		return ">u"
+	case CompareUGE:
+		return ">=u"
 	default:
 		return "?"
 	}
@@ -187,4 +242,21 @@ func signSuffix(signed bool) string {
 		return "s"
 	}
 	return "u"
+}
+
+func signalName(sig *Signal) string {
+	if sig == nil {
+		return "<nil>"
+	}
+	if sig.Name != "" {
+		return sig.Name
+	}
+	return "<unnamed>"
+}
+
+func blockName(bb *BasicBlock) string {
+	if bb == nil || bb.Label == "" {
+		return "<nil>"
+	}
+	return bb.Label
 }

@@ -191,6 +191,41 @@ func (p *printer) emitOperation(op ir.Operation, proc *ir.Process) {
 		} else {
 			fmt.Fprintf(p.w, "mygo.process.spawn \"%s\"(%s)\n", sanitize(o.Callee.Name), argList)
 		}
+	case *ir.CompareOperation:
+		left := p.valueRef(o.Left)
+		right := p.valueRef(o.Right)
+		dest := p.bindSSA(o.Dest)
+		operandType := typeString(o.Left.Type)
+		p.printIndent()
+		fmt.Fprintf(p.w, "%s = comb.icmp %s, %s, %s : %s\n",
+			dest,
+			comparePredicateName(o.Predicate),
+			left,
+			right,
+			operandType,
+		)
+	case *ir.NotOperation:
+		value := p.valueRef(o.Value)
+		dest := p.bindSSA(o.Dest)
+		p.printIndent()
+		fmt.Fprintf(p.w, "%s = comb.not %s : %s\n", dest, value, typeString(o.Value.Type))
+	case *ir.MuxOperation:
+		cond := p.valueRef(o.Cond)
+		tVal := p.valueRef(o.TrueValue)
+		fVal := p.valueRef(o.FalseValue)
+		dest := p.bindSSA(o.Dest)
+		p.printIndent()
+		fmt.Fprintf(p.w, "%s = comb.mux %s, %s, %s : %s, %s\n",
+			dest,
+			cond,
+			tVal,
+			fVal,
+			typeString(o.Cond.Type),
+			typeString(o.Dest.Type),
+		)
+	case *ir.PhiOperation:
+		p.printIndent()
+		fmt.Fprintf(p.w, "// phi %s has %d incoming values\n", sanitize(o.Dest.Name), len(o.Incomings))
 	default:
 		// skip unknown operations for now
 	}
@@ -217,6 +252,12 @@ func (p *printer) assignConst(sig *ir.Signal) string {
 }
 
 func (p *printer) bindSSA(sig *ir.Signal) string {
+	if sig == nil {
+		return "%unknown"
+	}
+	if name, ok := p.valueNames[sig]; ok {
+		return name
+	}
 	name := fmt.Sprintf("%%v%d", p.nextTemp)
 	p.nextTemp++
 	p.valueNames[sig] = name
@@ -285,6 +326,33 @@ func binOpName(op ir.BinOp) string {
 		return "xor"
 	default:
 		return "unknown"
+	}
+}
+
+func comparePredicateName(pred ir.ComparePredicate) string {
+	switch pred {
+	case ir.CompareEQ:
+		return "eq"
+	case ir.CompareNE:
+		return "ne"
+	case ir.CompareSLT:
+		return "slt"
+	case ir.CompareSLE:
+		return "sle"
+	case ir.CompareSGT:
+		return "sgt"
+	case ir.CompareSGE:
+		return "sge"
+	case ir.CompareULT:
+		return "ult"
+	case ir.CompareULE:
+		return "ule"
+	case ir.CompareUGT:
+		return "ugt"
+	case ir.CompareUGE:
+		return "uge"
+	default:
+		return "eq"
 	}
 }
 

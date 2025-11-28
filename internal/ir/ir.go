@@ -218,14 +218,43 @@ const (
 
 // BasicBlock mirrors SSA basic blocks at the IR level.
 type BasicBlock struct {
-	Label string
-	Ops   []Operation
+	Label       string
+	Ops         []Operation
+	Terminator  Terminator
+	Predecessors []*BasicBlock
+	Successors   []*BasicBlock
 }
 
 // Operation is implemented by every IR operation node.
 type Operation interface {
 	isOperation()
 }
+
+// Terminator ends a basic block and selects the next block.
+type Terminator interface {
+	isTerminator()
+}
+
+// BranchTerminator transfers control based on Cond.
+type BranchTerminator struct {
+	Cond  *Signal
+	True  *BasicBlock
+	False *BasicBlock
+}
+
+func (BranchTerminator) isTerminator() {}
+
+// JumpTerminator is an unconditional branch to Target.
+type JumpTerminator struct {
+	Target *BasicBlock
+}
+
+func (JumpTerminator) isTerminator() {}
+
+// ReturnTerminator marks block exit from the function.
+type ReturnTerminator struct{}
+
+func (ReturnTerminator) isTerminator() {}
 
 // BinOperation models a binary arithmetic operation.
 type BinOperation struct {
@@ -236,6 +265,16 @@ type BinOperation struct {
 }
 
 func (BinOperation) isOperation() {}
+
+// CompareOperation performs relational comparison producing a predicate bit.
+type CompareOperation struct {
+	Predicate ComparePredicate
+	Dest      *Signal
+	Left      *Signal
+	Right     *Signal
+}
+
+func (CompareOperation) isOperation() {}
 
 // AssignOperation copies one signal to another (e.g. store).
 type AssignOperation struct {
@@ -252,6 +291,38 @@ type ConvertOperation struct {
 }
 
 func (ConvertOperation) isOperation() {}
+
+// NotOperation performs logical inversion.
+type NotOperation struct {
+	Dest  *Signal
+	Value *Signal
+}
+
+func (NotOperation) isOperation() {}
+
+// MuxOperation selects between two values using Cond.
+type MuxOperation struct {
+	Dest       *Signal
+	Cond       *Signal
+	TrueValue  *Signal
+	FalseValue *Signal
+}
+
+func (MuxOperation) isOperation() {}
+
+// PhiOperation captures generic SSA phi merges when not lowered to a mux yet.
+type PhiOperation struct {
+	Dest      *Signal
+	Incomings []PhiIncoming
+}
+
+// PhiIncoming ties a predecessor block to the value provided.
+type PhiIncoming struct {
+	Block *BasicBlock
+	Value *Signal
+}
+
+func (PhiOperation) isOperation() {}
 
 // SendOperation emits a value onto a channel.
 type SendOperation struct {
@@ -288,4 +359,20 @@ const (
 	And
 	Or
 	Xor
+)
+
+// ComparePredicate enumerates supported relational tests.
+type ComparePredicate int
+
+const (
+	CompareEQ ComparePredicate = iota
+	CompareNE
+	CompareSLT
+	CompareSLE
+	CompareSGT
+	CompareSGE
+	CompareULT
+	CompareULE
+	CompareUGT
+	CompareUGE
 )

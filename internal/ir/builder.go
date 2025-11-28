@@ -54,6 +54,7 @@ type builder struct {
 	channels      map[ssa.Value]*Channel
 	paramSignals  map[*ssa.Parameter]*Signal
 	paramChannels map[*ssa.Parameter]*Channel
+	blocks        map[*ssa.BasicBlock]*BasicBlock
 	tempID        int
 }
 
@@ -83,17 +84,286 @@ func (b *builder) buildProcess(fn *ssa.Function) *Process {
 	b.module.Processes = append(b.module.Processes, proc)
 	b.bindFunctionParams(fn)
 
+	prevBlocks := b.blocks
+	b.blocks = make(map[*ssa.BasicBlock]*BasicBlock)
+	defer func() { b.blocks = prevBlocks }()
+
+	ordered := make([]*ssa.BasicBlock, 0, len(fn.Blocks))
 	for _, block := range fn.Blocks {
 		if block == nil {
 			continue
 		}
 		bb := &BasicBlock{Label: blockComment(block)}
-		for _, instr := range block.Instrs {
+		b.blocks[block] = bb
+		proc.Blocks = append(proc.Blocks, bb)
+		ordered = append(ordered, block)
+	}
+
+	for _, block := range ordered {
+		b.translateBlock(proc, block)
+	}
+	b.connectBlocks(ordered)
+	b.orderBlocks(proc)
+	return proc
+}
+
+func (b *builder) translateBlock(proc *Process, block *ssa.BasicBlock) {
+	if block == nil {
+		return
+	}
+	bb := b.blocks[block]
+	if bb == nil {
+		return
+	}
+	for _, instr := range block.Instrs {
+		switch v := instr.(type) {
+		case *ssa.Phi:
+			b.handlePhi(block, bb, v)
+		case *ssa.If:
+			b.handleIf(block, bb, v)
+		case *ssa.Jump:
+			b.handleJump(block, bb)
+		case *ssa.Return:
+			b.handleReturn(bb)
+		default:
 			b.translateInstr(proc, bb, instr)
 		}
-		proc.Blocks = append(proc.Blocks, bb)
 	}
-	return proc
+}
+
+func (b *builder) connectBlocks(blocks []*ssa.BasicBlock) {
+	for _, block := range blocks {
+		if block == nil {
+			continue
+		}
+		src := b.blocks[block]
+		if src == nil {
+			continue
+		}
+		for _, succ := range block.Succs {
+			if succ == nil {
+				continue
+			}
+			dst := b.blocks[succ]
+			if dst == nil {
+				continue
+			}
+			src.Successors = append(src.Successors, dst)
+			dst.Predecessors = append(dst.Predecessors, src)
+		}
+	}
+}
+
+func (b *builder) orderBlocks(proc *Process) {
+	if proc == nil || len(proc.Blocks) == 0 {
+		return
+	}
+	visited := make(map[*BasicBlock]bool)
+	order := make([]*BasicBlock, 0, len(proc.Blocks))
+	var visit func(*BasicBlock)
+	visit = func(bb *BasicBlock) {
+		if bb == nil || visited[bb] {
+			return
+		}
+		visited[bb] = true
+		for _, succ := range bb.Successors {
+			visit(succ)
+		}
+		order = append(order, bb)
+	}
+	visit(proc.Blocks[0])
+	for _, bb := range proc.Blocks {
+		if !visited[bb] {
+			visit(bb)
+		}
+	}
+	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
+		order[i], order[j] = order[j], order[i]
+	}
+	proc.Blocks = order
+}
+
+func (b *builder) handleIf(block *ssa.BasicBlock, bb *BasicBlock, stmt *ssa.If) {
+	if bb == nil || stmt == nil {
+		return
+	}
+	cond := b.signalForValue(stmt.Cond)
+	if cond == nil {
+		b.reporter.Warning(stmt.Pos(), "if condition has no signal mapping; treating as false")
+	}
+	var trueBB, falseBB *BasicBlock
+	if len(block.Succs) > 0 {
+		trueBB = b.blocks[block.Succs[0]]
+	}
+	if len(block.Succs) > 1 {
+		falseBB = b.blocks[block.Succs[1]]
+	}
+	bb.Terminator = &BranchTerminator{
+		Cond:  cond,
+		True:  trueBB,
+		False: falseBB,
+	}
+}
+
+func (b *builder) handleJump(block *ssa.BasicBlock, bb *BasicBlock) {
+	if bb == nil || block == nil {
+		return
+	}
+	var target *BasicBlock
+	if len(block.Succs) > 0 {
+		target = b.blocks[block.Succs[0]]
+	}
+	bb.Terminator = &JumpTerminator{Target: target}
+}
+
+func (b *builder) handleReturn(bb *BasicBlock) {
+	if bb == nil {
+		return
+	}
+	bb.Terminator = &ReturnTerminator{}
+}
+
+func (b *builder) handlePhi(block *ssa.BasicBlock, bb *BasicBlock, phi *ssa.Phi) {
+	if bb == nil || phi == nil {
+		return
+	}
+	dest := b.ensureValueSignal(phi)
+	dest.Type = signalType(phi.Type())
+	incomings := make([]PhiIncoming, 0, len(phi.Edges))
+	for idx, edge := range phi.Edges {
+		var pred *BasicBlock
+		if block != nil && idx < len(block.Preds) {
+			pred = b.blocks[block.Preds[idx]]
+		}
+		value := b.signalForValue(edge)
+		incomings = append(incomings, PhiIncoming{
+			Block: pred,
+			Value: value,
+		})
+	}
+	b.signals[phi] = dest
+	if mux := b.tryLowerPhiToMux(block, incomings, dest); mux != nil {
+		bb.Ops = append(bb.Ops, mux)
+		return
+	}
+	bb.Ops = append(bb.Ops, &PhiOperation{
+		Dest:      dest,
+		Incomings: incomings,
+	})
+}
+
+func (b *builder) handleBinOp(bb *BasicBlock, op *ssa.BinOp) {
+	if bb == nil || op == nil {
+		return
+	}
+	left := b.signalForValue(op.X)
+	right := b.signalForValue(op.Y)
+	if left == nil || right == nil {
+		return
+	}
+	if pred, ok := translateCompareOp(op.Op, isSignedType(op.X.Type())); ok {
+		dest := b.ensureValueSignal(op)
+		dest.Type = signalType(op.Type())
+		bb.Ops = append(bb.Ops, &CompareOperation{
+			Predicate: pred,
+			Dest:      dest,
+			Left:      left,
+			Right:     right,
+		})
+		return
+	}
+	bin, ok := translateBinOp(op.Op)
+	if !ok {
+		b.reporter.Warning(op.Pos(), fmt.Sprintf("unsupported binary op: %s", op.Op.String()))
+		return
+	}
+	dest := b.ensureValueSignal(op)
+	dest.Type = signalType(op.Type())
+	bb.Ops = append(bb.Ops, &BinOperation{
+		Op:    bin,
+		Dest:  dest,
+		Left:  left,
+		Right: right,
+	})
+}
+
+func (b *builder) handleUnOp(proc *Process, bb *BasicBlock, op *ssa.UnOp) {
+	if op == nil {
+		return
+	}
+	switch op.Op {
+	case token.MUL:
+		ptr := b.signalForValue(op.X)
+		if ptr != nil {
+			b.signals[op] = ptr
+		}
+	case token.ARROW:
+		b.handleRecv(proc, bb, op)
+	case token.NOT:
+		value := b.signalForValue(op.X)
+		if value == nil {
+			return
+		}
+		dest := b.ensureValueSignal(op)
+		dest.Type = signalType(op.Type())
+		bb.Ops = append(bb.Ops, &NotOperation{
+			Dest:  dest,
+			Value: value,
+		})
+	default:
+		// TODO: support unary negation and bitwise complement as needed.
+	}
+}
+
+func (b *builder) tryLowerPhiToMux(block *ssa.BasicBlock, incomings []PhiIncoming, dest *Signal) *MuxOperation {
+	if block == nil || len(block.Preds) != 2 || len(incomings) != 2 {
+		return nil
+	}
+	predA := block.Preds[0]
+	predB := block.Preds[1]
+	if predA == nil || predB == nil {
+		return nil
+	}
+	if len(predA.Preds) == 0 || len(predB.Preds) == 0 {
+		return nil
+	}
+	header := predA.Preds[0]
+	if header == nil || header != predB.Preds[0] {
+		return nil
+	}
+	if len(header.Succs) < 2 || len(header.Instrs) == 0 {
+		return nil
+	}
+	ifInstr, ok := header.Instrs[len(header.Instrs)-1].(*ssa.If)
+	if !ok {
+		return nil
+	}
+	cond := b.signalForValue(ifInstr.Cond)
+	if cond == nil {
+		return nil
+	}
+	trueSucc := header.Succs[0]
+	falseSucc := header.Succs[1]
+	var trueVal, falseVal *Signal
+	switch {
+	case trueSucc == predA && falseSucc == predB:
+		trueVal = incomings[0].Value
+		falseVal = incomings[1].Value
+	case trueSucc == predB && falseSucc == predA:
+		trueVal = incomings[1].Value
+		falseVal = incomings[0].Value
+	default:
+		return nil
+	}
+	if trueVal == nil || falseVal == nil {
+		return nil
+	}
+	return &MuxOperation{
+		Dest:       dest,
+		Cond:       cond,
+		TrueValue:  trueVal,
+		FalseValue: falseVal,
+	}
 }
 
 func (b *builder) translateInstr(proc *Process, bb *BasicBlock, instr ssa.Instruction) {
@@ -108,41 +378,16 @@ func (b *builder) translateInstr(proc *Process, bb *BasicBlock, instr ssa.Instru
 		}
 		bb.Ops = append(bb.Ops, &AssignOperation{Dest: dest, Value: val})
 	case *ssa.BinOp:
-		left := b.signalForValue(v.X)
-		right := b.signalForValue(v.Y)
-		if left == nil || right == nil {
-			return
-		}
-		dest := b.newTempSignal(v.Name(), v.Type(), v.Pos())
-		op, ok := translateBinOp(v.Op)
-		if !ok {
-			b.reporter.Errorf("unsupported binary op: %s", v.Op.String())
-			return
-		}
-		bb.Ops = append(bb.Ops, &BinOperation{
-			Op:    op,
-			Dest:  dest,
-			Left:  left,
-			Right: right,
-		})
-		b.signals[v] = dest
+		b.handleBinOp(bb, v)
 	case *ssa.UnOp:
-		switch v.Op {
-		case token.MUL:
-			ptr := b.signalForValue(v.X)
-			if ptr != nil {
-				b.signals[v] = ptr
-			}
-		case token.ARROW:
-			b.handleRecv(proc, bb, v)
-		}
+		b.handleUnOp(proc, bb, v)
 	case *ssa.Convert:
 		source := b.signalForValue(v.X)
 		if source == nil {
 			return
 		}
-		dest := b.newTempSignal(v.Name(), v.Type(), v.Pos())
-		b.signals[v] = dest
+		dest := b.ensureValueSignal(v)
+		dest.Type = signalType(v.Type())
 		bb.Ops = append(bb.Ops, &ConvertOperation{
 			Dest:  dest,
 			Value: source,
@@ -156,8 +401,6 @@ func (b *builder) translateInstr(proc *Process, bb *BasicBlock, instr ssa.Instru
 		b.handleMakeChan(v)
 	case *ssa.Send:
 		b.handleSend(proc, bb, v)
-	case *ssa.Return:
-		// No hardware action needed for now.
 	case *ssa.DebugRef:
 		// Skip debug markers.
 	case *ssa.Call:
@@ -170,6 +413,8 @@ func (b *builder) translateInstr(proc *Process, bb *BasicBlock, instr ssa.Instru
 		// Interfaces only appear for fmt.Printf arguments – ignore.
 	case *ssa.Slice:
 		// Also part of fmt formatting.
+	case *ssa.If, *ssa.Jump, *ssa.Return:
+		// handled separately in translateBlock
 	default:
 		// For unsupported instructions we emit a warning once.
 		b.reporter.Warning(instr.Pos(), fmt.Sprintf("instruction %T ignored in IR builder", instr))
@@ -273,8 +518,8 @@ func (b *builder) handleSend(proc *Process, bb *BasicBlock, send *ssa.Send) {
 
 func (b *builder) handleRecv(proc *Process, bb *BasicBlock, recv *ssa.UnOp) {
 	channel := b.channelForValue(recv.X)
-	dest := b.newTempSignal(recv.Name(), recv.Type(), recv.Pos())
-	b.signals[recv] = dest
+	dest := b.ensureValueSignal(recv)
+	dest.Type = signalType(recv.Type())
 	if channel == nil {
 		return
 	}
@@ -370,11 +615,15 @@ func (b *builder) signalForValue(v ssa.Value) *Signal {
 		sig := b.buildConstSignal(val)
 		b.signals[v] = sig
 		return sig
+	case *ssa.BinOp:
+		return b.ensureValueSignal(val)
 	case *ssa.ChangeType:
 		if src := b.signalForValue(val.X); src != nil {
 			b.signals[v] = src
 			return src
 		}
+	case *ssa.Phi:
+		return b.ensureValueSignal(val)
 	case *ssa.IndexAddr, *ssa.MakeInterface, *ssa.Slice, *ssa.MakeChan:
 		return nil
 	}
@@ -402,24 +651,6 @@ func (b *builder) lookupChannel(v ssa.Value, warn bool) *Channel {
 		b.reporter.Warning(v.Pos(), fmt.Sprintf("no channel mapping for value %T", v))
 	}
 	return nil
-}
-
-func (b *builder) newTempSignal(base string, typ types.Type, pos token.Pos) *Signal {
-	if base == "" {
-		base = fmt.Sprintf("tmp%d", b.tempID)
-	} else {
-		base = fmt.Sprintf("%s_%d", base, b.tempID)
-	}
-	b.tempID++
-	name := base
-	sig := &Signal{
-		Name:   name,
-		Type:   signalType(typ),
-		Kind:   Wire,
-		Source: pos,
-	}
-	b.module.Signals[sig.Name] = sig
-	return sig
 }
 
 func (b *builder) newConstName() string {
@@ -473,6 +704,49 @@ func translateBinOp(tok token.Token) (BinOp, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func translateCompareOp(tok token.Token, signed bool) (ComparePredicate, bool) {
+	switch tok {
+	case token.EQL:
+		return CompareEQ, true
+	case token.NEQ:
+		return CompareNE, true
+	case token.LSS:
+		if signed {
+			return CompareSLT, true
+		}
+		return CompareULT, true
+	case token.LEQ:
+		if signed {
+			return CompareSLE, true
+		}
+		return CompareULE, true
+	case token.GTR:
+		if signed {
+			return CompareSGT, true
+		}
+		return CompareUGT, true
+	case token.GEQ:
+		if signed {
+			return CompareSGE, true
+		}
+		return CompareUGE, true
+	default:
+		return 0, false
+	}
+}
+
+func isSignedType(t types.Type) bool {
+	if t == nil {
+		return true
+	}
+	if basic, ok := t.Underlying().(*types.Basic); ok {
+		if basic.Info()&types.IsUnsigned != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func signalType(t types.Type) *SignalType {
@@ -581,4 +855,26 @@ func (b *builder) uniqueName(prefix string) string {
 	name := fmt.Sprintf("%s_%d", prefix, b.tempID)
 	b.tempID++
 	return name
+}
+
+func (b *builder) ensureValueSignal(v ssa.Value) *Signal {
+	if v == nil {
+		return nil
+	}
+	if sig, ok := b.signals[v]; ok && sig != nil {
+		return sig
+	}
+	base := defaultName(v.Name(), "tmp")
+	name := b.uniqueName(base)
+	sig := &Signal{
+		Name:   name,
+		Type:   signalType(v.Type()),
+		Kind:   Wire,
+		Source: v.Pos(),
+	}
+	if b.module != nil {
+		b.module.Signals[sig.Name] = sig
+	}
+	b.signals[v] = sig
+	return sig
 }
