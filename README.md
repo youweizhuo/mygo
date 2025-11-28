@@ -374,6 +374,12 @@ mygo compile -emit=mlir -o simple.mlir simple.go
 # Compile Go to Verilog
 mygo compile -emit=verilog -o simple.sv simple.go
 
+# Compile to Verilog and drive a simulator (expect iverilog-style stdout)
+mygo sim --circt-translate=/path/to/circt-translate \
+         --simulator=/path/to/run-sim.sh \
+         --expect=test/e2e/pipeline1/expected.sim \
+         test/e2e/pipeline1/main.go
+
 # Dump SSA for debugging
 mygo dump-ssa simple.go
 
@@ -390,11 +396,13 @@ mygo dump-ir simple.go
 
 **Global Flags:**
 - `--target=<name>`: Target function/module (default: `main`)
-- `--clock=<signal>`: Clock signal name (default: `clk`)
-- `--reset=<signal>`: Reset signal name (default: `rst`)
 - `-emit=<format>`: Output format (`mlir`, `verilog`)
 - `--diag-format=<format>`: Diagnostic format (`text`, `json`)
-- `--opt-passes=<list>`: Comma-separated optimization passes
+- `--circt-opt=<path>` / `--circt-translate=<path>`: Override the CIRCT binaries invoked by the Verilog backend.
+- `--circt-pipeline=<passes>`: Pass pipeline string forwarded to `circt-opt`.
+- `--circt-mlir=<path>`: Dump the MLIR handed to CIRCT (useful for debugging).
+- `--simulator=<bin>` / `--sim-args="<args>"`: Simulator executable and extra arguments for the `sim` command.
+- `--expect=<path>`: Optional golden stdout file the `sim` command compares the simulator output against.
 
 **Implementation (`cmd/mygo/main.go`):**
 

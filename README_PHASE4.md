@@ -37,8 +37,8 @@ Weeks **11-13** bring the MyGO prototype from MLIR-only outputs to a Verilog-cap
 - Extend `test/e2e` so each workload can optionally specify a `.sim.out` golden that the CI sim step compares against.
 
 ### 4. CLI & Documentation Updates
-- Update `README.md` + `README_PHASE4.md` with Verilog/simulation instructions, environment requirements (CIRCT build, simulator install), and troubleshooting steps.
-- Document new CLI flags (`--circt-opt`, `--circt-translate`, `--circt-pipeline`, `--circt-mlir`, `--simulator`) and add quickstart guides for both MLIR and Verilog flows.
+- Update `README.md` + `README_PHASE4.md` with Verilog/simulation instructions, environment requirements (CIRCT build, simulator install), and troubleshooting steps. Provide a worked example using `mygo sim --simulator <wrapper> --expect <trace> test/e2e/pipeline1/main.go`.
+- Document new CLI flags (`--circt-opt`, `--circt-translate`, `--circt-pipeline`, `--circt-mlir`, `--simulator`, `--sim-args`, `--expect`) and add quickstart guides for both MLIR and Verilog flows.
 - Keep a running list of supported Argo workloads and their golden artifacts (MLIR, SV, simulation logs).
 
 ---
