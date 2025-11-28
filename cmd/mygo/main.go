@@ -12,6 +12,7 @@ import (
 	"mygo/internal/ir"
 	"mygo/internal/mlir"
 	"mygo/internal/passes"
+	"mygo/internal/validate"
 )
 
 func main() {
@@ -34,6 +35,8 @@ func run(args []string) error {
 		return runDumpSSA(args[1:])
 	case "dump-ir":
 		return runDumpIR(args[1:])
+	case "lint":
+		return runLint(args[1:])
 	default:
 		printGlobalUsage()
 		return fmt.Errorf("unknown command: %s", args[0])
@@ -65,6 +68,10 @@ func runCompile(args []string) error {
 		return err
 	}
 
+	if err := validateProgram(result); err != nil {
+		return err
+	}
+
 	design, err := ir.BuildDesign(result.program, result.reporter)
 	if err != nil {
 		return err
@@ -93,6 +100,7 @@ func printGlobalUsage() {
 	fmt.Fprintf(os.Stderr, "  compile    Compile Go source to MLIR or Verilog (stub)\n")
 	fmt.Fprintf(os.Stderr, "  dump-ssa   Load Go sources and dump SSA form\n")
 	fmt.Fprintf(os.Stderr, "  dump-ir    Translate SSA into the MyGO hardware IR and dump it\n")
+	fmt.Fprintf(os.Stderr, "  lint       Run validation-only checks (e.g. concurrency rules)\n")
 }
 
 func runDumpSSA(args []string) error {
@@ -142,6 +150,10 @@ func runDumpIR(args []string) error {
 		return err
 	}
 
+	if err := validateProgram(result); err != nil {
+		return err
+	}
+
 	design, err := ir.BuildDesign(result.program, result.reporter)
 	if err != nil {
 		return err
@@ -152,6 +164,35 @@ func runDumpIR(args []string) error {
 	}
 
 	ir.Dump(design, os.Stdout)
+	return nil
+}
+
+func runLint(args []string) error {
+	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	concurrency := fs.Bool("concurrency", true, "enable concurrency validation rules")
+	diagFormat := fs.String("diag-format", "text", "diagnostic output format (text|json)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		fs.Usage()
+		return fmt.Errorf("lint requires at least one Go source file")
+	}
+
+	result, err := prepareProgram(fs.Args(), *diagFormat)
+	if err != nil {
+		return err
+	}
+
+	if *concurrency {
+		if err := validateProgram(result); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -193,6 +234,16 @@ func runDefaultPasses(design *ir.Design, reporter *diag.Reporter) error {
 	}
 	if reporter != nil && reporter.HasErrors() {
 		return fmt.Errorf("analysis passes reported errors")
+	}
+	return nil
+}
+
+func validateProgram(result *frontendResult) error {
+	if result == nil || result.program == nil {
+		return fmt.Errorf("no program available for validation")
+	}
+	if err := validate.CheckProgram(result.program, result.reporter); err != nil {
+		return err
 	}
 	return nil
 }
