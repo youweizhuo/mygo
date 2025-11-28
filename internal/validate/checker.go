@@ -2,10 +2,12 @@ package validate
 
 import (
 	"fmt"
+	"go/ast"
 	"go/constant"
 	"go/token"
 	"go/types"
 
+	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 
@@ -14,7 +16,7 @@ import (
 
 // CheckProgram validates that the SSA program only uses the supported subset
 // of Go constructs required by the deterministic concurrency model.
-func CheckProgram(prog *ssa.Program, pkgs []*ssa.Package, reporter *diag.Reporter) error {
+func CheckProgram(prog *ssa.Program, pkgs []*ssa.Package, astPkgs []*packages.Package, reporter *diag.Reporter) error {
 	if prog == nil {
 		return fmt.Errorf("no SSA program provided for validation")
 	}
@@ -25,6 +27,7 @@ func CheckProgram(prog *ssa.Program, pkgs []*ssa.Package, reporter *diag.Reporte
 	c := &checker{
 		reporter:   reporter,
 		allowedPkg: make(map[*ssa.Package]struct{}),
+		astPkgs:    astPkgs,
 	}
 	for _, pkg := range pkgs {
 		if pkg != nil {
@@ -42,9 +45,11 @@ type checker struct {
 	reporter   *diag.Reporter
 	errCount   int
 	allowedPkg map[*ssa.Package]struct{}
+	astPkgs    []*packages.Package
 }
 
 func (c *checker) run(prog *ssa.Program) {
+	c.checkASTLoops()
 	for fn := range ssautil.AllFunctions(prog) {
 		if fn == nil || len(fn.Blocks) == 0 {
 			continue
@@ -66,7 +71,6 @@ func (c *checker) run(prog *ssa.Program) {
 
 func (c *checker) checkFunction(fn *ssa.Function) {
 	loopBlocks := findLoopBlocks(fn)
-	c.enforceLoopBounds(fn, loopBlocks)
 	for _, block := range fn.Blocks {
 		if block == nil {
 			continue
@@ -93,13 +97,30 @@ func (c *checker) inspectInstruction(fn *ssa.Function, block *ssa.BasicBlock, in
 	}
 }
 
-func (c *checker) enforceLoopBounds(fn *ssa.Function, loopBlocks map[*ssa.BasicBlock]bool) {
-	if len(loopBlocks) == 0 {
+func (c *checker) checkASTLoops() {
+	if len(c.astPkgs) == 0 {
 		return
 	}
-	for block := range loopBlocks {
-		c.error(blockPosition(block), "loop in %s must have a compile-time static bound; restructure this loop into an unrolled or state-machine form", fn.Name())
-		break
+	for _, pkg := range c.astPkgs {
+		if pkg == nil {
+			continue
+		}
+		info := pkg.TypesInfo
+		for _, file := range pkg.Syntax {
+			if file == nil {
+				continue
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				forStmt, ok := n.(*ast.ForStmt)
+				if !ok {
+					return true
+				}
+				if !isBoundedFor(forStmt, info) {
+					c.error(forStmt.For, "for loops must have compile-time constant init, condition, and step")
+				}
+				return true
+			})
+		}
 	}
 }
 
@@ -285,4 +306,150 @@ func blockPosition(block *ssa.BasicBlock) token.Pos {
 		}
 	}
 	return token.NoPos
+}
+
+func isBoundedFor(stmt *ast.ForStmt, info *types.Info) bool {
+	if stmt == nil || stmt.Init == nil || stmt.Cond == nil || stmt.Post == nil {
+		return false
+	}
+	iterName, _, ok := loopInitInfo(stmt.Init, info)
+	if !ok {
+		return false
+	}
+	_, direction, ok := loopConditionInfo(stmt.Cond, iterName, info)
+	if !ok {
+		return false
+	}
+	step, ok := loopStepInfo(stmt.Post, iterName, info)
+	if !ok {
+		return false
+	}
+	if direction == increasing && step <= 0 {
+		return false
+	}
+	if direction == decreasing && step >= 0 {
+		return false
+	}
+	return true
+}
+
+func loopInitInfo(stmt ast.Stmt, info *types.Info) (string, int64, bool) {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		return "", 0, false
+	}
+	ident, ok := assign.Lhs[0].(*ast.Ident)
+	if !ok || ident.Name == "_" {
+		return "", 0, false
+	}
+	val, ok := constantIntValue(info, assign.Rhs[0])
+	if !ok {
+		return "", 0, false
+	}
+	return ident.Name, val, true
+}
+
+type loopDirection int
+
+const (
+	increasing loopDirection = 1
+	decreasing loopDirection = -1
+)
+
+func loopConditionInfo(expr ast.Expr, iter string, info *types.Info) (int64, loopDirection, bool) {
+	bin, ok := expr.(*ast.BinaryExpr)
+	if !ok {
+		return 0, 0, false
+	}
+	left, ok := bin.X.(*ast.Ident)
+	if !ok || left.Name != iter {
+		return 0, 0, false
+	}
+	value, ok := constantIntValue(info, bin.Y)
+	if !ok {
+		return 0, 0, false
+	}
+	switch bin.Op {
+	case token.LSS, token.LEQ:
+		return value, increasing, true
+	case token.GTR, token.GEQ:
+		return value, decreasing, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func loopStepInfo(stmt ast.Stmt, iter string, info *types.Info) (int64, bool) {
+	switch s := stmt.(type) {
+	case *ast.IncDecStmt:
+		ident, ok := s.X.(*ast.Ident)
+		if !ok || ident.Name != iter {
+			return 0, false
+		}
+		if s.Tok == token.INC {
+			return 1, true
+		}
+		if s.Tok == token.DEC {
+			return -1, true
+		}
+	case *ast.AssignStmt:
+		if len(s.Lhs) != 1 || len(s.Rhs) != 1 {
+			return 0, false
+		}
+		ident, ok := s.Lhs[0].(*ast.Ident)
+		if !ok || ident.Name != iter {
+			return 0, false
+		}
+		switch s.Tok {
+		case token.ADD_ASSIGN:
+			return extractStepValue(s.Rhs[0], info)
+		case token.SUB_ASSIGN:
+			if step, ok := extractStepValue(s.Rhs[0], info); ok {
+				return -step, true
+			}
+		case token.ASSIGN:
+			bin, ok := s.Rhs[0].(*ast.BinaryExpr)
+			if !ok {
+				return 0, false
+			}
+			left, ok := bin.X.(*ast.Ident)
+			if !ok || left.Name != iter {
+				return 0, false
+			}
+			step, ok := extractStepValue(bin.Y, info)
+			if !ok {
+				return 0, false
+			}
+			switch bin.Op {
+			case token.ADD:
+				return step, true
+			case token.SUB:
+				return -step, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func extractStepValue(expr ast.Expr, info *types.Info) (int64, bool) {
+	return constantIntValue(info, expr)
+}
+
+func constantIntValue(info *types.Info, expr ast.Expr) (int64, bool) {
+	if info == nil {
+		return 0, false
+	}
+	if ident, ok := expr.(*ast.Ident); ok {
+		if obj, ok := info.ObjectOf(ident).(*types.Const); ok && obj.Val() != nil {
+			return constant.Int64Val(obj.Val())
+		}
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Value == nil {
+		if call, ok := expr.(*ast.CallExpr); ok && len(call.Args) == 1 {
+			return constantIntValue(info, call.Args[0])
+		}
+		return 0, false
+	}
+	return constant.Int64Val(tv.Value)
 }

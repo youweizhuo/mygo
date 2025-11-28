@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 
 	"mygo/internal/diag"
@@ -99,15 +100,15 @@ func TestValidateRejectsRecursion(t *testing.T) {
 
 func runValidation(t *testing.T, file string) (string, error) {
 	t.Helper()
-	prog, pkgs, fset := buildSSAProgram(t, file)
+	prog, pkgs, astPkgs, fset := buildSSAProgram(t, file)
 	var buf bytes.Buffer
 	reporter := diag.NewReporter(&buf, "text")
 	reporter.SetFileSet(fset)
-	err := CheckProgram(prog, pkgs, reporter)
+	err := CheckProgram(prog, pkgs, astPkgs, reporter)
 	return buf.String(), err
 }
 
-func buildSSAProgram(t *testing.T, file string) (*ssa.Program, []*ssa.Package, *token.FileSet) {
+func buildSSAProgram(t *testing.T, file string) (*ssa.Program, []*ssa.Package, []*packages.Package, *token.FileSet) {
 	t.Helper()
 	cfg := frontend.LoadConfig{
 		Sources: []string{filepath.Join("testdata", file, "main.go")},
@@ -127,5 +128,5 @@ func buildSSAProgram(t *testing.T, file string) (*ssa.Program, []*ssa.Package, *
 	if loadReporter.HasErrors() {
 		t.Fatalf("ssa construction reported errors")
 	}
-	return prog, ssaPkgs, fset
+	return prog, ssaPkgs, pkgs, fset
 }

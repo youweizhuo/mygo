@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 
 	"mygo/internal/diag"
@@ -200,6 +201,7 @@ type frontendResult struct {
 	reporter *diag.Reporter
 	program  *ssa.Program
 	ssaPkgs  []*ssa.Package
+	pkgs     []*packages.Package
 }
 
 func prepareProgram(sources []string, diagFormat string) (*frontendResult, error) {
@@ -223,6 +225,7 @@ func prepareProgram(sources []string, diagFormat string) (*frontendResult, error
 		reporter: reporter,
 		program:  prog,
 		ssaPkgs:  ssaPkgs,
+		pkgs:     pkgs,
 	}, nil
 }
 
@@ -242,7 +245,7 @@ func validateProgram(result *frontendResult) error {
 	if result == nil || result.program == nil {
 		return fmt.Errorf("no program available for validation")
 	}
-	if err := validate.CheckProgram(result.program, result.ssaPkgs, result.reporter); err != nil {
+	if err := validate.CheckProgram(result.program, result.ssaPkgs, result.pkgs, result.reporter); err != nil {
 		return err
 	}
 	return nil
