@@ -75,13 +75,7 @@ func EmitVerilog(design *ir.Design, outputPath string, opts Options) (Result, er
 		defer os.RemoveAll(tempDir)
 	}
 
-	mlirPath := opts.DumpMLIRPath
-	if mlirPath == "" {
-		mlirPath = filepath.Join(tempDir, "design.mlir")
-	} else if err := os.MkdirAll(filepath.Dir(mlirPath), 0o755); err != nil {
-		return Result{}, fmt.Errorf("backend: create circt-mlir dir: %w", err)
-	}
-
+	mlirPath := filepath.Join(tempDir, "design.mlir")
 	if err := mlir.Emit(design, mlirPath); err != nil {
 		return Result{}, fmt.Errorf("backend: emit mlir: %w", err)
 	}
@@ -93,6 +87,15 @@ func EmitVerilog(design *ir.Design, outputPath string, opts Options) (Result, er
 			return Result{}, err
 		}
 		currentInput = optOutput
+	}
+
+	if opts.DumpMLIRPath != "" {
+		if err := os.MkdirAll(filepath.Dir(opts.DumpMLIRPath), 0o755); err != nil {
+			return Result{}, fmt.Errorf("backend: create circt-mlir dir: %w", err)
+		}
+		if err := copyFile(currentInput, opts.DumpMLIRPath); err != nil {
+			return Result{}, fmt.Errorf("backend: dump mlir: %w", err)
+		}
 	}
 
 	if err := runCirctTranslate(translatePath, currentInput, outputPath); err != nil {
@@ -251,6 +254,9 @@ func removeModuleBlock(content, moduleName string) (string, bool) {
 		return content, false
 	}
 	end := start + endIdx + len("endmodule")
+	for end < len(content) && content[end] != '\n' && content[end] != '\r' {
+		end++
+	}
 	for end < len(content) && (content[end] == '\n' || content[end] == '\r') {
 		end++
 	}
@@ -313,20 +319,20 @@ func copyFifoSources(mainPath, fifoSource string) ([]string, error) {
 
 func copyFile(src, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return fmt.Errorf("backend: create fifo dest dir: %w", err)
+		return fmt.Errorf("backend: create copy dest dir: %w", err)
 	}
 	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("backend: open fifo source: %w", err)
+		return fmt.Errorf("backend: open copy source: %w", err)
 	}
 	defer in.Close()
 	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return fmt.Errorf("backend: create fifo copy: %w", err)
+		return fmt.Errorf("backend: create copy dest: %w", err)
 	}
 	defer out.Close()
 	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf("backend: copy fifo data: %w", err)
+		return fmt.Errorf("backend: copy data: %w", err)
 	}
 	return nil
 }

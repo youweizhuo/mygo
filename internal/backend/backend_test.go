@@ -82,6 +82,34 @@ cat "$INPUT"
 	}
 }
 
+func TestEmitVerilogDumpsFinalMLIR(t *testing.T) {
+	requirePosix(t)
+
+	design := testDesign()
+	tmp := t.TempDir()
+
+	translate := filepath.Join("testdata", "fakecirct", "translate.sh")
+	opt := filepath.Join("testdata", "fakecirct", "opt.sh")
+	dumpPath := filepath.Join(tmp, "mlir", "final.mlir")
+	out := filepath.Join(tmp, "out.sv")
+	opts := Options{
+		CIRCTTranslatePath: translate,
+		CIRCTOptPath:       opt,
+		PassPipeline:       "pipeline-test",
+		DumpMLIRPath:       dumpPath,
+	}
+	if _, err := EmitVerilog(design, out, opts); err != nil {
+		t.Fatalf("EmitVerilog failed: %v", err)
+	}
+	data, err := os.ReadFile(dumpPath)
+	if err != nil {
+		t.Fatalf("read mlir dump: %v", err)
+	}
+	if !strings.Contains(string(data), "// opt:pipeline-test") {
+		t.Fatalf("expected mlir dump to include opt output, got:\n%s", data)
+	}
+}
+
 func TestEmitVerilogMissingTranslate(t *testing.T) {
 	design := testDesign()
 	opts := Options{CIRCTTranslatePath: filepath.Join(t.TempDir(), "missing")}
@@ -141,6 +169,47 @@ EOS
 	}
 	if _, err := os.Stat(expectedAux); err != nil {
 		t.Fatalf("expected aux file to exist: %v", err)
+	}
+}
+
+func TestEmitVerilogStripsAnnotatedFifoModules(t *testing.T) {
+	requirePosix(t)
+	design := testDesignWithChannel()
+	tmp := t.TempDir()
+	translate := writeScript(t, tmp, "translate.sh", `#!/bin/sh
+set -e
+cat <<'EOS'
+module main();
+endmodule : main
+module helper();
+endmodule // helper
+module mygo_fifo_i32_d1();
+endmodule : mygo_fifo_i32_d1
+module sentinel();
+endmodule // sentinel
+EOS
+`)
+	fifoSrc := filepath.Join(tmp, "fifo_impl.sv")
+	if err := os.WriteFile(fifoSrc, []byte("module mygo_fifo_i32_d1(); endmodule\n"), 0o644); err != nil {
+		t.Fatalf("write fifo impl: %v", err)
+	}
+	out := filepath.Join(tmp, "design.sv")
+	if _, err := EmitVerilog(design, out, Options{
+		CIRCTTranslatePath: translate,
+		FIFOSource:         fifoSrc,
+	}); err != nil {
+		t.Fatalf("EmitVerilog failed: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read design: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "mygo_fifo_i32_d1") {
+		t.Fatalf("expected fifo module to be stripped:\n%s", text)
+	}
+	if strings.Contains(text, ": mygo_fifo_i32_d1") || strings.Contains(text, "// mygo_fifo_i32_d1") {
+		t.Fatalf("expected fifo annotations to be removed:\n%s", text)
 	}
 }
 

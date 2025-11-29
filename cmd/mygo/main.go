@@ -340,12 +340,16 @@ func runSim(args []string) error {
 
 	hasChannels := designHasChannels(design)
 
-	tempDir, err := os.MkdirTemp("", "mygo-sim-*")
-	if err != nil {
-		return err
-	}
-	if !*keepArtifacts && *verilogOut == "" {
-		defer os.RemoveAll(tempDir)
+	var tempDir string
+	if *verilogOut == "" {
+		var err error
+		tempDir, err = os.MkdirTemp("", "mygo-sim-*")
+		if err != nil {
+			return err
+		}
+		if !*keepArtifacts {
+			defer os.RemoveAll(tempDir)
+		}
 	}
 
 	svPath := *verilogOut
@@ -447,6 +451,10 @@ func defaultSimExpectPath(input string) string {
 	if input == "" {
 		return ""
 	}
-	dir := filepath.Dir(input)
+	cleaned := filepath.Clean(input)
+	if info, err := os.Stat(cleaned); err == nil && info.IsDir() {
+		return filepath.Join(cleaned, "expected.sim")
+	}
+	dir := filepath.Dir(cleaned)
 	return filepath.Join(dir, "expected.sim")
 }
