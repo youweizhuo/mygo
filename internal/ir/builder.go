@@ -359,12 +359,29 @@ func (b *builder) handleBinOp(bb *BasicBlock, op *ssa.BinOp) {
 		return
 	}
 	bin, ok := translateBinOp(op.Op)
+	if ok && bin == ShrU && op.Op == token.SHR && isSignedType(op.X.Type()) {
+		bin = ShrS
+	}
 	if !ok {
 		b.reporter.Warning(op.Pos(), fmt.Sprintf("unsupported binary op: %s", op.Op.String()))
 		return
 	}
 	dest := b.ensureValueSignal(op)
 	dest.Type = signalType(op.Type())
+	if isShiftBinOp(bin) {
+		leftType := signalType(op.X.Type())
+		if leftType != nil && (left.Type == nil || !left.Type.Equal(leftType)) {
+			left.Type = leftType
+		}
+		if left.Type != nil && (right.Type == nil || !right.Type.Equal(left.Type)) {
+			cast := b.newAnonymousSignal("shift", left.Type, op.Pos())
+			bb.Ops = append(bb.Ops, &ConvertOperation{
+				Dest:  cast,
+				Value: right,
+			})
+			right = cast
+		}
+	}
 	bb.Ops = append(bb.Ops, &BinOperation{
 		Op:    bin,
 		Dest:  dest,
@@ -1023,8 +1040,21 @@ func translateBinOp(tok token.Token) (BinOp, bool) {
 		return Or, true
 	case token.XOR:
 		return Xor, true
+	case token.SHL:
+		return Shl, true
+	case token.SHR:
+		return ShrU, true
 	default:
 		return 0, false
+	}
+}
+
+func isShiftBinOp(op BinOp) bool {
+	switch op {
+	case Shl, ShrU, ShrS:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1177,6 +1207,26 @@ func (b *builder) uniqueName(prefix string) string {
 	name := fmt.Sprintf("%s_%d", prefix, b.tempID)
 	b.tempID++
 	return name
+}
+
+func (b *builder) newAnonymousSignal(prefix string, typ *SignalType, pos token.Pos) *Signal {
+	if prefix == "" {
+		prefix = "tmp"
+	}
+	name := b.uniqueName(prefix)
+	sig := &Signal{
+		Name:   name,
+		Type:   typ.Clone(),
+		Kind:   Wire,
+		Source: pos,
+	}
+	if sig.Type == nil {
+		sig.Type = &SignalType{}
+	}
+	if b.module != nil {
+		b.module.Signals[name] = sig
+	}
+	return sig
 }
 
 func (b *builder) ensureValueSignal(v ssa.Value) *Signal {

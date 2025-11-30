@@ -1,0 +1,19 @@
+module {
+  hw.module @main(in %clk: i1, in %rst: i1) {
+    %c0 = hw.constant 5 : i8
+    %c1 = hw.constant -12 : i16
+    %c2 = hw.constant 1024 : i32
+    %zext_pad4 = hw.constant 0 : i8
+    %v3 = comb.concat %zext_pad4, %c0 : i8, i8
+    %v5 = comb.add %v3, %c1 : i16
+    %sext_msb7 = comb.extract %v5 from 15 : (i16) -> i1
+    %sext_bits8 = comb.replicate %sext_msb7 : (i1) -> i16
+    %v6 = comb.concat %sext_bits8, %v5 : i16, i16
+    %v9 = comb.add %v6, %c2 : i32
+    %stdout_fd10 = hw.constant 2147483649 : i32
+    sv.always posedge %clk {
+      sv.fwrite %stdout_fd10, "acc=%d wide=%d\n"(%v5, %v9) : i16, i32
+    }
+    hw.output
+  }
+}

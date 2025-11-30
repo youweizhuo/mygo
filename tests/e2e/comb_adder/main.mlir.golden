@@ -1,0 +1,25 @@
+module {
+  hw.module @main(in %clk: i1, in %rst: i1) {
+    %c0 = hw.constant -12 : i16
+    %c1 = hw.constant 25 : i16
+    %c2 = hw.constant 4660 : i16
+    %sext_msb4 = comb.extract %c0 from 15 : (i16) -> i1
+    %sext_bits5 = comb.replicate %sext_msb4 : (i1) -> i16
+    %v3 = comb.concat %sext_bits5, %c0 : i16, i16
+    %sext_msb7 = comb.extract %c1 from 15 : (i16) -> i1
+    %sext_bits8 = comb.replicate %sext_msb7 : (i1) -> i16
+    %v6 = comb.concat %sext_bits8, %c1 : i16, i16
+    %v9 = comb.add %v3, %v6 : i32
+    %v10 = comb.extract %v9 from 0 : (i32) -> i16
+    %zext_pad12 = hw.constant 0 : i16
+    %v11 = comb.concat %zext_pad12, %v10 : i16, i16
+    %zext_pad14 = hw.constant 0 : i16
+    %v13 = comb.concat %zext_pad14, %c2 : i16, i16
+    %v15 = comb.add %v11, %v13 : i32
+    %stdout_fd16 = hw.constant 2147483649 : i32
+    sv.always posedge %clk {
+      sv.fwrite %stdout_fd16, "partial=%d widened=0x%x\n"(%v9, %v15) : i32, i32
+    }
+    hw.output
+  }
+}

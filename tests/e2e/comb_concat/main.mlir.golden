@@ -1,0 +1,26 @@
+module {
+  hw.module @main(in %clk: i1, in %rst: i1) {
+    %c0 = hw.constant 171 : i8
+    %c1 = hw.constant 15 : i16
+    %c2 = hw.constant 255 : i16
+    %c3 = hw.constant 8 : i32
+    %c4 = hw.constant 205 : i8
+    %c5 = hw.constant 12 : i32
+    %zext_pad7 = hw.constant 0 : i8
+    %v6 = comb.concat %zext_pad7, %c0 : i8, i8
+    %v8 = comb.extract %c3 from 0 : (i32) -> i16
+    %v9 = comb.shl %v6, %v8 : i16
+    %zext_pad11 = hw.constant 0 : i8
+    %v10 = comb.concat %zext_pad11, %c4 : i8, i8
+    %v12 = comb.or %v9, %v10 : i16
+    %v13 = comb.extract %c5 from 0 : (i32) -> i16
+    %v14 = comb.shru %v12, %v13 : i16
+    %v15 = comb.and %v14, %c1 : i16
+    %v16 = comb.and %v12, %c2 : i16
+    %stdout_fd17 = hw.constant 2147483649 : i32
+    sv.always posedge %clk {
+      sv.fwrite %stdout_fd17, "word=0x%x high=%d low=0x%x\n"(%v12, %v15, %v16) : i16, i16, i16
+    }
+    hw.output
+  }
+}

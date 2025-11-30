@@ -195,6 +195,12 @@ func binOpSymbol(op BinOp) string {
 		return "|"
 	case Xor:
 		return "^"
+	case Shl:
+		return "<<"
+	case ShrU:
+		return ">>"
+	case ShrS:
+		return ">>s"
 	default:
 		return "?"
 	}

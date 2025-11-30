@@ -119,6 +119,13 @@ func (t *SignalType) Promote(other *SignalType) *SignalType {
 
 // ResultFor returns the output type for applying op to the receiver and other.
 func (t *SignalType) ResultFor(op BinOp, other *SignalType) *SignalType {
+	switch op {
+	case Shl, ShrU, ShrS:
+		if t != nil {
+			return t.Clone()
+		}
+		return other.Clone()
+	}
 	if t == nil {
 		return other.Clone()
 	}
@@ -384,6 +391,9 @@ const (
 	And
 	Or
 	Xor
+	Shl
+	ShrU
+	ShrS
 )
 
 // ComparePredicate enumerates supported relational tests.

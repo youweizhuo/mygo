@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -11,27 +12,19 @@ import (
 
 func TestRunSimMatchesExpectedTrace(t *testing.T) {
 	requirePosix(t)
+	requireVerilator(t)
 	tmp := t.TempDir()
 	repo := repoRoot(t)
 
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", `module main();
-endmodule
-module mygo_fifo_i32_d1();
-endmodule
-module mygo_fifo_i32_d4();
-endmodule
-module mygo_fifo_i1_d1();
-endmodule
-`)
+	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", testVerilogModule())
 	fifoSrc := writeFile(t, tmp, "fifos.sv", fifoLibrary())
-	simulator := filepath.Join(repo, "scripts", "mock-sim.sh")
-	trace := filepath.Join(repo, "tests", "e2e", "pipeline1", "expected.sim")
-	t.Setenv("MYGO_SIM_TRACE", trace)
+	trace := writeFile(t, tmp, "expected.sim", "verilator trace=42\n")
 
 	args := []string{
 		"--circt-opt", opt,
 		"--fifo-src", fifoSrc,
-		"--simulator", simulator,
+		"--sim-max-cycles", "4",
+		"--expect", trace,
 		filepath.Join(repo, "tests", "e2e", "pipeline1", "main.go"),
 	}
 	if err := runSim(args); err != nil {
@@ -41,27 +34,19 @@ endmodule
 
 func TestRunSimDetectsMismatch(t *testing.T) {
 	requirePosix(t)
+	requireVerilator(t)
 	tmp := t.TempDir()
 	repo := repoRoot(t)
 
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", `module main();
-endmodule
-module mygo_fifo_i32_d1();
-endmodule
-module mygo_fifo_i32_d4();
-endmodule
-module mygo_fifo_i1_d1();
-endmodule
-`)
+	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", testVerilogModule())
 	fifoSrc := writeFile(t, tmp, "fifos.sv", fifoLibrary())
-	simulator := filepath.Join(repo, "scripts", "mock-sim.sh")
 	badTrace := writeFile(t, tmp, "bad.sim", "unexpected output\n")
-	t.Setenv("MYGO_SIM_TRACE", badTrace)
 
 	args := []string{
 		"--circt-opt", opt,
 		"--fifo-src", fifoSrc,
-		"--simulator", simulator,
+		"--sim-max-cycles", "4",
+		"--expect", badTrace,
 		filepath.Join(repo, "tests", "e2e", "pipeline1", "main.go"),
 	}
 	err := runSim(args)
@@ -72,29 +57,21 @@ endmodule
 
 func TestRunSimWithVerilogOutDoesNotLeakTempDir(t *testing.T) {
 	requirePosix(t)
+	requireVerilator(t)
 	tmp := t.TempDir()
 	repo := repoRoot(t)
 
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", `module main();
-endmodule
-module mygo_fifo_i32_d1();
-endmodule
-module mygo_fifo_i32_d4();
-endmodule
-module mygo_fifo_i1_d1();
-endmodule
-`)
+	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", testVerilogModule())
 	fifoSrc := writeFile(t, tmp, "fifos.sv", fifoLibrary())
-	simulator := filepath.Join(repo, "scripts", "mock-sim.sh")
-	trace := filepath.Join(repo, "tests", "e2e", "pipeline1", "expected.sim")
-	t.Setenv("MYGO_SIM_TRACE", trace)
+	trace := writeFile(t, tmp, "expected.sim", "verilator trace=42\n")
 	verilogOut := filepath.Join(tmp, "artifacts", "design.sv")
 
 	before := simTempDirs(t)
 	args := []string{
 		"--circt-opt", opt,
 		"--fifo-src", fifoSrc,
-		"--simulator", simulator,
+		"--sim-max-cycles", "4",
+		"--expect", trace,
 		"--verilog-out", verilogOut,
 		filepath.Join(repo, "tests", "e2e", "pipeline1", "main.go"),
 	}
@@ -218,6 +195,30 @@ endmodule
 `
 }
 
+func testVerilogModule() string {
+	return `module main(
+  input clk,
+        rst
+);
+  reg fired = 0;
+  always @(posedge clk) begin
+    if (rst) begin
+      fired <= 0;
+    end else if (!fired) begin
+      fired <= 1;
+      $fwrite(32'h80000001, "verilator trace=42\n");
+    end
+  end
+endmodule
+module mygo_fifo_i32_d1();
+endmodule
+module mygo_fifo_i32_d4();
+endmodule
+module mygo_fifo_i1_d1();
+endmodule
+`
+}
+
 func simTempDirs(t *testing.T) map[string]struct{} {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "mygo-sim-*"))
@@ -235,5 +236,12 @@ func requirePosix(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("tests require a POSIX shell")
+	}
+}
+
+func requireVerilator(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("verilator"); err != nil {
+		t.Skip("verilator binary not found on PATH")
 	}
 }

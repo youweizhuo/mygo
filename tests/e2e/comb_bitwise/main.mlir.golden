@@ -1,0 +1,14 @@
+module {
+  hw.module @main(in %clk: i1, in %rst: i1) {
+    %c0 = hw.constant 13260 : i16
+    %c1 = hw.constant 3855 : i16
+    %v2 = comb.and %c0, %c1 : i16
+    %v3 = comb.or %c0, %c1 : i16
+    %v4 = comb.xor %c0, %c1 : i16
+    %stdout_fd5 = hw.constant 2147483649 : i32
+    sv.always posedge %clk {
+      sv.fwrite %stdout_fd5, "and=0x%x or=0x%x xor=0x%x\n"(%v2, %v3, %v4) : i16, i16, i16
+    }
+    hw.output
+  }
+}

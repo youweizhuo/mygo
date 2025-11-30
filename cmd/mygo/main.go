@@ -300,6 +300,8 @@ func runSim(args []string) error {
 	simArgs := fs.String("sim-args", "", "additional simulator arguments (space-separated)")
 	expectPath := fs.String("expect", "", "path to file containing expected simulator stdout (optional)")
 	fifoSrc := fs.String("fifo-src", "", "path to FIFO implementation source (required when channels are present)")
+	simMaxCycles := fs.Int("sim-max-cycles", 16, "maximum clock cycles to run when using the default Verilator simulator")
+	simResetCycles := fs.Int("sim-reset-cycles", 2, "number of initial cycles to hold reset asserted for the default simulator")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -378,11 +380,7 @@ func runSim(args []string) error {
 	auxFiles := append([]string{}, res.AuxPaths...)
 
 	if *simulator == "" {
-		fmt.Fprintf(os.Stdout, "Verilog written to %s\n", svPath)
-		if len(auxFiles) > 0 {
-			fmt.Fprintf(os.Stdout, "Additional sources: %s\n", strings.Join(auxFiles, ", "))
-		}
-		return nil
+		return runBuiltinVerilator(svPath, auxFiles, *expectPath, *simMaxCycles, *simResetCycles)
 	}
 
 	simulatorArgs := parseSimArgs(*simArgs)
@@ -403,13 +401,8 @@ func runSim(args []string) error {
 	}
 
 	if *expectPath != "" {
-		want, err := os.ReadFile(*expectPath)
-		if err != nil {
-			return fmt.Errorf("read expect file: %w", err)
-		}
-		got := stdoutBuf.Bytes()
-		if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace(want)) {
-			return fmt.Errorf("simulator output mismatch\nexpected:\n%s\nactual:\n%s", string(want), stdoutBuf.String())
+		if err := compareSimulatorOutput(*expectPath, stdoutBuf.Bytes()); err != nil {
+			return err
 		}
 	}
 
@@ -456,3 +449,151 @@ func defaultSimExpectPath(input string) string {
 	dir := filepath.Dir(cleaned)
 	return filepath.Join(dir, "expected.sim")
 }
+
+func runBuiltinVerilator(mainPath string, auxPaths []string, expectPath string, maxCycles, resetCycles int) error {
+	if maxCycles <= 0 {
+		return fmt.Errorf("default simulator requires --sim-max-cycles > 0 (got %d)", maxCycles)
+	}
+	if resetCycles < 0 {
+		return fmt.Errorf("default simulator requires --sim-reset-cycles >= 0 (got %d)", resetCycles)
+	}
+	verilatorPath, err := exec.LookPath("verilator")
+	if err != nil {
+		return fmt.Errorf("resolve verilator: %w", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "mygo-verilator-*")
+	if err != nil {
+		return fmt.Errorf("create verilator temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	driverPath := filepath.Join(tempDir, "sim_main.cpp")
+	driver := fmt.Sprintf(verilatorDriverTemplate, maxCycles, resetCycles)
+	if err := os.WriteFile(driverPath, []byte(driver), 0o644); err != nil {
+		return fmt.Errorf("write verilator driver: %w", err)
+	}
+	xargsShim := filepath.Join(tempDir, "xargs")
+	if err := os.WriteFile(xargsShim, []byte(xargsShimScript), 0o755); err != nil {
+		return fmt.Errorf("write xargs shim: %w", err)
+	}
+
+	objDir := filepath.Join(tempDir, "obj_dir")
+	args := []string{
+		"--cc", "--exe", "--build",
+		"--sv",
+		"--Mdir", objDir,
+		"--top-module", "main",
+		"-o", "mygo_sim",
+	}
+	args = append(args, mainPath)
+	args = append(args, auxPaths...)
+	args = append(args, driverPath)
+
+	cmd := exec.Command(verilatorPath, args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	cmd.Env = prependPathToEnv(tempDir)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("verilator build failed: %w", err)
+	}
+
+	simPath := filepath.Join(objDir, "mygo_sim")
+	simCmd := exec.Command(simPath)
+	var stdoutBuf bytes.Buffer
+	if expectPath != "" {
+		simCmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	} else {
+		simCmd.Stdout = os.Stdout
+	}
+	simCmd.Stderr = os.Stderr
+	if err := simCmd.Run(); err != nil {
+		return fmt.Errorf("verilator simulation failed: %w", err)
+	}
+	if expectPath != "" {
+		if err := compareSimulatorOutput(expectPath, stdoutBuf.Bytes()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func compareSimulatorOutput(expectPath string, got []byte) error {
+	want, err := os.ReadFile(expectPath)
+	if err != nil {
+		return fmt.Errorf("read expect file: %w", err)
+	}
+	if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace(want)) {
+		return fmt.Errorf("simulator output mismatch\nexpected:\n%s\nactual:\n%s", string(want), string(got))
+	}
+	return nil
+}
+
+func prependPathToEnv(dir string) []string {
+	env := os.Environ()
+	newPath := dir
+	currentPath := os.Getenv("PATH")
+	if currentPath != "" {
+		newPath = dir + string(os.PathListSeparator) + currentPath
+	}
+	replaced := false
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			env[i] = "PATH=" + newPath
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		env = append(env, "PATH="+newPath)
+	}
+	return env
+}
+
+const verilatorDriverTemplate = `#include "verilated.h"
+#include "Vmain.h"
+
+int main(int argc, char** argv) {
+  Verilated::commandArgs(argc, argv);
+  Vmain top;
+  const vluint64_t kMaxCycles = %[1]dULL;
+  const vluint64_t kResetCycles = %[2]dULL;
+  top.clk = 0;
+  top.rst = 1;
+  for (vluint64_t cycle = 0; cycle < kMaxCycles; ++cycle) {
+    top.clk = 0;
+    top.eval();
+    if (cycle >= kResetCycles) {
+      top.rst = 0;
+    }
+    top.clk = 1;
+    top.eval();
+    if (Verilated::gotFinish()) {
+      break;
+    }
+  }
+  top.final();
+  return 0;
+}
+`
+
+const xargsShimScript = `#!/usr/bin/env python3
+import subprocess
+import sys
+
+def main():
+    argv = sys.argv[1:]
+    data = sys.stdin.read().split()
+    if not data:
+        return 0
+    cmd = argv + data
+    try:
+        completed = subprocess.run(cmd, check=False)
+        return completed.returncode
+    except FileNotFoundError as exc:
+        sys.stderr.write(f"xargs shim could not find command: {exc}\n")
+        return 127
+
+if __name__ == "__main__":
+    sys.exit(main())
+`

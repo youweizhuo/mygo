@@ -1,0 +1,18 @@
+module {
+  hw.module @main(in %clk: i1, in %rst: i1) {
+    %c0 = hw.constant 1 : i32
+    %c1 = hw.constant 2 : i16
+    %sext_msb3 = comb.extract %c0 from 31 : (i32) -> i1
+    %sext_bits4 = comb.replicate %sext_msb3 : (i1) -> i32
+    %v2 = comb.concat %sext_bits4, %c0 : i32, i32
+    %sext_msb6 = comb.extract %c1 from 15 : (i16) -> i1
+    %sext_bits7 = comb.replicate %sext_msb6 : (i1) -> i48
+    %v5 = comb.concat %sext_bits7, %c1 : i48, i16
+    %v8 = comb.add %v2, %v5 : i64
+    %stdout_fd9 = hw.constant 2147483649 : i32
+    sv.always posedge %clk {
+      sv.fwrite %stdout_fd9, "The result is small: %d\n"(%v8) : i64
+    }
+    hw.output
+  }
+}

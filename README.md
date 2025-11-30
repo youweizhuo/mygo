@@ -1,6 +1,6 @@
 # MyGO
 
-MyGO is a research compiler that lowers subsets of Go into a structural MLIR/CIRCT representation and emits SystemVerilog for simulation. The toolchain bundles a CLI, IR passes, and a Verilog backend that can be wired to real simulators or the included mock harness for testing.
+MyGO is a research compiler that lowers subsets of Go into a structural MLIR/CIRCT representation and emits SystemVerilog for simulation. The toolchain bundles a CLI, IR passes, and a Verilog backend that can be wired to other simulators or the built-in Verilator harness.
 
 ---
 
@@ -14,6 +14,7 @@ go install ./cmd/mygo
 
 # Verify prerequisites (Go 1.22+, CIRCT tools available on PATH)
 circt-opt --version
+verilator --version
 
 # Smoke test
 go test ./...
@@ -52,20 +53,26 @@ All auxiliary paths are reported via `backend.Result.AuxPaths` so you can hand t
 
 ### Simulate
 ```bash
-# With a real simulator wrapper (e.g. Verilator)
-mygo sim \
-    --circt-opt=$(which circt-opt) \
-    --fifo-src=/path/to/my_fifo_lib \
-    --simulator=/path/to/verilator-wrapper.sh \
-    tests/e2e/pipeline1/main.go
-
-# With the bundled mock simulator (great for CI or local validation)
-MYGO_SIM_TRACE=tests/e2e/pipeline1/expected.sim \
+# Default run with the built-in Verilator harness (requires verilator on PATH)
 mygo sim \
     --circt-opt=$(which circt-opt) \
     --fifo-src=internal/backend/templates/simple_fifo.sv \
-    --simulator=./scripts/mock-sim.sh \
+    --sim-max-cycles=64 \
     tests/e2e/pipeline1/main.go
+
+# Point to a custom simulator wrapper if needed
+mygo sim \
+    --circt-opt=$(which circt-opt) \
+    --fifo-src=/path/to/my_fifo_lib \
+    --simulator=/path/to/custom-sim.sh \
+    --sim-args="--extra --flags" \
+    tests/e2e/pipeline1/main.go
+
+`--sim-max-cycles` and `--sim-reset-cycles` control how long the built-in driver
+ticks the design before aborting, and `--expect <path>` enables golden trace
+checks against the simulator stdout. When `--simulator` is omitted, Verilator is
+invoked directly; otherwise, the CLI forwards all generated sources to the
+custom wrapper.
 ```
 
 `mygo sim` auto-detects `expected.sim` living next to a single Go input and fails fast if the simulator output differs.
@@ -82,7 +89,6 @@ mygo sim \
 | `internal/mlir` | Lowers the IR to structural MLIR (`hw`, `seq`, `sv` dialects) and emits FIFO extern declarations. |
 | `internal/backend` | Manages CIRCT temp files, optional `circt-opt` passes, Verilog emission, FIFO stripping, and mirroring of user-provided helper IP. |
 | `tests/e2e` | End-to-end workloads (ported from Argo) plus golden MLIR and simulation traces. |
-| `scripts/mock-sim.sh` | Minimal simulator wrapper used by tests/CI; it prints the contents of `MYGO_SIM_TRACE` after validating Verilog inputs exist. |
 | `internal/backend/templates/simple_fifo.sv` | Reference FIFO implementation for quick experimentation. Copy/modify this outside the repo for production flows. |
 
 ---
@@ -96,11 +102,11 @@ go test ./...
 # Focus on backend/package tests
 go test ./internal/backend -run .
 
-# Run the e2e harness (compiles real Go programs through the CLI)
-go test ./tests/e2e -run TestProgramsCompileToMLIR
+# Run the e2e harness (compares MLIR, SV, and sim goldens)
+go test ./tests/e2e -run TestProgramsLoweringAndSimulation
 ```
 
-The CLI itself has regression coverage in `cmd/mygo/sim_test.go`, which exercises the `sim` command with fake CIRCT binaries and the mock simulator.
+The CLI itself has regression coverage in `cmd/mygo/sim_test.go`, which stubs the CIRCT binaries and executes the built-in Verilator flow (or any custom simulator you point it at).
 
 ---
 

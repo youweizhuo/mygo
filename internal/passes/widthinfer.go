@@ -131,18 +131,22 @@ func (w *WidthInference) propagateBin(op *ir.BinOperation) bool {
 	destType := ensureSignalType(op.Dest)
 	changed := false
 
-	if leftType.IsUnknown() && !rightType.IsUnknown() {
-		changed = copyType(leftType, rightType) || changed
-	}
-	if rightType.IsUnknown() && !leftType.IsUnknown() {
-		changed = copyType(rightType, leftType) || changed
+	requiresMatchingTypes := op.Op != ir.Shl && op.Op != ir.ShrU && op.Op != ir.ShrS
+
+	if requiresMatchingTypes {
+		if leftType.IsUnknown() && !rightType.IsUnknown() {
+			changed = copyType(leftType, rightType) || changed
+		}
+		if rightType.IsUnknown() && !leftType.IsUnknown() {
+			changed = copyType(rightType, leftType) || changed
+		}
 	}
 
 	if leftType.IsUnknown() || rightType.IsUnknown() {
 		return changed
 	}
 
-	if leftType.Signed != rightType.Signed {
+	if requiresMatchingTypes && leftType.Signed != rightType.Signed {
 		w.report(op.Left, fmt.Sprintf("mixed signed/unsigned operands (%s vs %s) in %s; insert an explicit conversion",
 			leftType.Description(), rightType.Description(), signalLabel(op.Dest)))
 		return changed

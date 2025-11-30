@@ -988,6 +988,12 @@ func binOpName(op ir.BinOp) string {
 		return "or"
 	case ir.Xor:
 		return "xor"
+	case ir.Shl:
+		return "shl"
+	case ir.ShrU:
+		return "shru"
+	case ir.ShrS:
+		return "shrs"
 	default:
 		return "unknown"
 	}
