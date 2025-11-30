@@ -72,7 +72,10 @@ mygo sim \
 ticks the design before aborting, and `--expect <path>` enables golden trace
 checks against the simulator stdout. When `--simulator` is omitted, Verilator is
 invoked directly; otherwise, the CLI forwards all generated sources to the
-custom wrapper.
+custom wrapper. The default flow synthesizes a tiny C++ driver (`sim_main.cpp`)
+plus a Verilator Makefile inside a temporary directory (e.g. `/tmp/mygo-verilator-*`)
+before deleting it; add `--keep-artifacts` (optionally `--verilog-out`) if you
+want to inspect the generated C++/Makefile/Verilog bundle.
 ```
 
 `mygo sim` auto-detects `expected.sim` living next to a single Go input and fails fast if the simulator output differs.
