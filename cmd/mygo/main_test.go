@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+
+	"mygo/internal/backend"
+	"mygo/internal/ir"
 )
 
 func TestRunSimMatchesExpectedTrace(t *testing.T) {
@@ -18,12 +21,15 @@ func TestRunSimMatchesExpectedTrace(t *testing.T) {
 	tmp := t.TempDir()
 	repo := repoRoot(t)
 
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", "verilog_main.sv")
-	fifoSrc := writeFile(t, tmp, "fifos.sv", readTestdata(t, "fifo_library.sv"))
+	stubEmitVerilog(t, "verilog_main.sv")
+	fifoSrc := writeFifoLibrary(t, tmp, []fifoSpec{
+		{Width: 32, Depth: 1},
+		{Width: 32, Depth: 4},
+		{Width: 1, Depth: 1},
+	})
 	trace := writeFile(t, tmp, "expected.sim", "verilator trace=42\n")
 
 	args := []string{
-		"--circt-opt", opt,
 		"--fifo-src", fifoSrc,
 		"--sim-max-cycles", "4",
 		"--expect", trace,
@@ -40,12 +46,15 @@ func TestRunSimDetectsMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	repo := repoRoot(t)
 
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", "verilog_main.sv")
-	fifoSrc := writeFile(t, tmp, "fifos.sv", readTestdata(t, "fifo_library.sv"))
+	stubEmitVerilog(t, "verilog_main.sv")
+	fifoSrc := writeFifoLibrary(t, tmp, []fifoSpec{
+		{Width: 32, Depth: 1},
+		{Width: 32, Depth: 4},
+		{Width: 1, Depth: 1},
+	})
 	badTrace := writeFile(t, tmp, "bad.sim", "unexpected output\n")
 
 	args := []string{
-		"--circt-opt", opt,
 		"--fifo-src", fifoSrc,
 		"--sim-max-cycles", "4",
 		"--expect", badTrace,
@@ -63,14 +72,17 @@ func TestRunSimWithVerilogOutDoesNotLeakTempDir(t *testing.T) {
 	tmp := t.TempDir()
 	repo := repoRoot(t)
 
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", "verilog_main.sv")
-	fifoSrc := writeFile(t, tmp, "fifos.sv", readTestdata(t, "fifo_library.sv"))
+	stubEmitVerilog(t, "verilog_main.sv")
+	fifoSrc := writeFifoLibrary(t, tmp, []fifoSpec{
+		{Width: 32, Depth: 1},
+		{Width: 32, Depth: 4},
+		{Width: 1, Depth: 1},
+	})
 	trace := writeFile(t, tmp, "expected.sim", "verilator trace=42\n")
 	verilogOut := filepath.Join(tmp, "artifacts", "design.sv")
 
 	before := simTempDirs(t)
 	args := []string{
-		"--circt-opt", opt,
 		"--fifo-src", fifoSrc,
 		"--sim-max-cycles", "4",
 		"--expect", trace,
@@ -207,36 +219,6 @@ func readTestdata(t *testing.T, name string) string {
 	return string(data)
 }
 
-func writeTemplateFromTestdata(t *testing.T, dir, name, templateName string, data any, perm os.FileMode) string {
-	t.Helper()
-	tmplBytes := readTestdata(t, templateName)
-	tmpl, err := template.New(templateName).Parse(tmplBytes)
-	if err != nil {
-		t.Fatalf("parse template %s: %v", templateName, err)
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		t.Fatalf("execute template %s: %v", templateName, err)
-	}
-	path := filepath.Join(dir, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir for %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, buf.Bytes(), perm); err != nil {
-		t.Fatalf("write file %s: %v", path, err)
-	}
-	return path
-}
-
-func writeExportVerilogScript(t *testing.T, dir, name, verilogFixture string) string {
-	data := struct {
-		VerilogBody string
-	}{
-		VerilogBody: readTestdata(t, verilogFixture),
-	}
-	return writeTemplateFromTestdata(t, dir, name, "export_verilog.sh.tmpl", data, 0o755)
-}
-
 func writeFile(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -247,6 +229,47 @@ func writeFile(t *testing.T, dir, name, body string) string {
 		t.Fatalf("write file %s: %v", path, err)
 	}
 	return path
+}
+
+type fifoSpec struct {
+	Width int
+	Depth int
+}
+
+func writeFifoLibrary(t *testing.T, dir string, fifos []fifoSpec) string {
+	t.Helper()
+	body := executeTestTemplate(t, "fifo_library.sv.tmpl", fifos)
+	return writeFile(t, dir, "fifos.sv", body)
+}
+
+func executeTestTemplate(t *testing.T, name string, data any) string {
+	t.Helper()
+	path := testdataPath(t, name)
+	tmpl, err := template.ParseFiles(path)
+	if err != nil {
+		t.Fatalf("parse template %s: %v", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		t.Fatalf("execute template %s: %v", name, err)
+	}
+	return buf.String()
+}
+
+func stubEmitVerilog(t *testing.T, verilogFixture string) {
+	t.Helper()
+	verilog := readTestdata(t, verilogFixture)
+	prev := emitVerilog
+	emitVerilog = func(design *ir.Design, outputPath string, opts backend.Options) (backend.Result, error) {
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+			return backend.Result{}, err
+		}
+		if err := os.WriteFile(outputPath, []byte(verilog), 0o644); err != nil {
+			return backend.Result{}, err
+		}
+		return backend.Result{MainPath: outputPath}, nil
+	}
+	t.Cleanup(func() { emitVerilog = prev })
 }
 
 func simTempDirs(t *testing.T) map[string]struct{} {

@@ -1,24 +1,32 @@
 package backend
 
 import (
-	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-	"text/template"
 
 	"mygo/internal/ir"
 )
 
 func TestEmitVerilogRunsExportVerilog(t *testing.T) {
-	requirePosix(t)
-
 	design := testDesign()
 	tmp := t.TempDir()
 
-	opt := writeFakeCirctOpt(t, tmp)
+	opt := touchFakeBinary(t, tmp)
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if binary != opt {
+			return fmt.Errorf("unexpected binary %s", binary)
+		}
+		if pipeline != "" {
+			return fmt.Errorf("expected empty pipeline, got %s", pipeline)
+		}
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return os.WriteFile(verilogOutputPath, []byte("// circt-opt export\n"), 0o644)
+	})
 
 	out := filepath.Join(tmp, "out.sv")
 	opts := Options{CIRCTOptPath: opt}
@@ -43,12 +51,30 @@ func TestEmitVerilogRunsExportVerilog(t *testing.T) {
 }
 
 func TestEmitVerilogRunsOptWhenPipelineProvided(t *testing.T) {
-	requirePosix(t)
-
 	design := testDesign()
 	tmp := t.TempDir()
 
-	opt := writeFakeCirctOpt(t, tmp)
+	opt := touchFakeBinary(t, tmp)
+	stubRunPipeline(t, func(binary, pipeline, inputPath, outputPath string) error {
+		if binary != opt {
+			return fmt.Errorf("unexpected binary %s", binary)
+		}
+		if pipeline != "pipeline-test" {
+			return fmt.Errorf("expected pipeline-test, got %s", pipeline)
+		}
+		content, err := os.ReadFile(inputPath)
+		if err != nil {
+			return err
+		}
+		prefixed := append([]byte("// pipeline:"+pipeline+"\n"), content...)
+		return os.WriteFile(outputPath, prefixed, 0o644)
+	})
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return copyFile(inputPath, verilogOutputPath)
+	})
 
 	out := filepath.Join(tmp, "out.sv")
 	opts := Options{
@@ -69,14 +95,26 @@ func TestEmitVerilogRunsOptWhenPipelineProvided(t *testing.T) {
 }
 
 func TestEmitVerilogDumpsFinalMLIR(t *testing.T) {
-	requirePosix(t)
-
 	design := testDesign()
 	tmp := t.TempDir()
 
-	opt := writeFakeCirctOpt(t, tmp)
+	opt := touchFakeBinary(t, tmp)
 	dumpPath := filepath.Join(tmp, "mlir", "final.mlir")
 	out := filepath.Join(tmp, "out.sv")
+	stubRunPipeline(t, func(binary, pipeline, inputPath, outputPath string) error {
+		content, err := os.ReadFile(inputPath)
+		if err != nil {
+			return err
+		}
+		prefixed := append([]byte("// opt:pipeline-test\n"), content...)
+		return os.WriteFile(outputPath, prefixed, 0o644)
+	})
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return copyFile(inputPath, verilogOutputPath)
+	})
 	opts := Options{
 		CIRCTOptPath: opt,
 		PassPipeline: "pipeline-test",
@@ -105,10 +143,15 @@ func TestEmitVerilogMissingCirctOpt(t *testing.T) {
 }
 
 func TestEmitVerilogEmitsAuxiliaryFifoFile(t *testing.T) {
-	requirePosix(t)
 	design := testDesignWithChannel()
 	tmp := t.TempDir()
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", "verilog_with_fifo.sv")
+	opt := touchFakeBinary(t, tmp)
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return os.WriteFile(verilogOutputPath, []byte(readBackendTestdata(t, "verilog_with_fifo.sv")), 0o644)
+	})
 	fifoSrc := filepath.Join(tmp, "fifo_impl.sv")
 	fifoBody := readBackendTestdata(t, "fifo_impl_external.sv")
 	if err := os.WriteFile(fifoSrc, []byte(fifoBody), 0o644); err != nil {
@@ -149,10 +192,15 @@ func TestEmitVerilogEmitsAuxiliaryFifoFile(t *testing.T) {
 }
 
 func TestEmitVerilogStripsAnnotatedFifoModules(t *testing.T) {
-	requirePosix(t)
 	design := testDesignWithChannel()
 	tmp := t.TempDir()
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", "verilog_with_annotations.sv")
+	opt := touchFakeBinary(t, tmp)
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return os.WriteFile(verilogOutputPath, []byte(readBackendTestdata(t, "verilog_with_annotations.sv")), 0o644)
+	})
 	fifoSrc := filepath.Join(tmp, "fifo_impl.sv")
 	if err := os.WriteFile(fifoSrc, []byte(readBackendTestdata(t, "fifo_impl_basic.sv")), 0o644); err != nil {
 		t.Fatalf("write fifo impl: %v", err)
@@ -178,10 +226,15 @@ func TestEmitVerilogStripsAnnotatedFifoModules(t *testing.T) {
 }
 
 func TestEmitVerilogCopiesFifoDirectory(t *testing.T) {
-	requirePosix(t)
 	design := testDesignWithChannel()
 	tmp := t.TempDir()
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", "verilog_with_fifo.sv")
+	opt := touchFakeBinary(t, tmp)
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return os.WriteFile(verilogOutputPath, []byte(readBackendTestdata(t, "verilog_with_fifo.sv")), 0o644)
+	})
 	srcDir := filepath.Join(tmp, "fifo_lib")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatalf("mkdir fifo dir: %v", err)
@@ -219,10 +272,15 @@ func TestEmitVerilogCopiesFifoDirectory(t *testing.T) {
 }
 
 func TestEmitVerilogErrorsWithoutFifoSource(t *testing.T) {
-	requirePosix(t)
 	design := testDesignWithChannel()
 	tmp := t.TempDir()
-	opt := writeExportVerilogScript(t, tmp, "circt-opt.sh", "verilog_with_fifo.sv")
+	opt := touchFakeBinary(t, tmp)
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return os.WriteFile(verilogOutputPath, []byte(readBackendTestdata(t, "verilog_with_fifo.sv")), 0o644)
+	})
 	out := filepath.Join(tmp, "design.sv")
 	_, err := EmitVerilog(design, out, Options{CIRCTOptPath: opt})
 	if err == nil || !strings.Contains(err.Error(), "fifo source") {
@@ -265,49 +323,25 @@ func testDesignWithChannel() *ir.Design {
 	}
 }
 
-func writeFakeCirctOpt(t *testing.T, dir string) string {
-	return writeExecutableFromTestdata(t, dir, "circt-opt.sh", "fake_circt_opt.sh")
-}
-
-func writeExportVerilogScript(t *testing.T, dir, name, verilogFixture string) string {
-	data := struct {
-		VerilogBody string
-	}{
-		VerilogBody: readBackendTestdata(t, verilogFixture),
-	}
-	return writeTemplateFromTestdata(t, dir, name, "export_verilog.sh.tmpl", data)
-}
-
-func writeExecutableFromTestdata(t *testing.T, dir, name, dataFile string) string {
+func stubRunPipeline(t *testing.T, fn func(binary, pipeline, inputPath, outputPath string) error) {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	contents := readBackendTestdata(t, dataFile)
-	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
-		t.Fatalf("write executable %s: %v", path, err)
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("tests require a POSIX shell")
-	}
-	return path
+	prev := runPipeline
+	runPipeline = fn
+	t.Cleanup(func() { runPipeline = prev })
 }
 
-func writeTemplateFromTestdata(t *testing.T, dir, name, templateName string, data any) string {
+func stubRunExport(t *testing.T, fn func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error) {
 	t.Helper()
-	templateText := readBackendTestdata(t, templateName)
-	tmpl, err := template.New(templateName).Parse(templateText)
-	if err != nil {
-		t.Fatalf("parse template %s: %v", templateName, err)
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		t.Fatalf("execute template %s: %v", templateName, err)
-	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, buf.Bytes(), 0o755); err != nil {
-		t.Fatalf("write script %s: %v", path, err)
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("tests require a POSIX shell")
+	prev := runExport
+	runExport = fn
+	t.Cleanup(func() { runExport = prev })
+}
+
+func touchFakeBinary(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "circt-opt")
+	if err := os.WriteFile(path, []byte{}, 0o755); err != nil {
+		t.Fatalf("touch binary: %v", err)
 	}
 	return path
 }
@@ -329,11 +363,4 @@ func readBackendTestdata(t *testing.T, name string) string {
 		t.Fatalf("read testdata %s: %v", name, err)
 	}
 	return string(data)
-}
-
-func requirePosix(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("tests require a POSIX shell")
-	}
 }

@@ -14,6 +14,11 @@ import (
 	"mygo/internal/mlir"
 )
 
+var (
+	runPipeline = runCirctPipeline
+	runExport   = runCirctExportVerilog
+)
+
 // Options configures how the CIRCT backend is invoked.
 type Options struct {
 	// CIRCTOptPath optionally overrides the circt-opt binary. When empty the
@@ -77,13 +82,13 @@ func EmitVerilog(design *ir.Design, outputPath string, opts Options) (Result, er
 	currentInput := mlirPath
 	if opts.PassPipeline != "" {
 		pipelineOutput := filepath.Join(tempDir, "design.pipeline.mlir")
-		if err := runCirctPipeline(optPath, opts.PassPipeline, currentInput, pipelineOutput); err != nil {
+		if err := runPipeline(optPath, opts.PassPipeline, currentInput, pipelineOutput); err != nil {
 			return Result{}, err
 		}
 		currentInput = pipelineOutput
 	}
 	exportOutput := filepath.Join(tempDir, "design.export.mlir")
-	if err := runCirctExportVerilog(optPath, "", opts.LoweringOptions, currentInput, exportOutput, outputPath); err != nil {
+	if err := runExport(optPath, "", opts.LoweringOptions, currentInput, exportOutput, outputPath); err != nil {
 		return Result{}, err
 	}
 	currentInput = exportOutput

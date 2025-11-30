@@ -22,6 +22,8 @@ import (
 	"mygo/internal/validate"
 )
 
+var emitVerilog = backend.EmitVerilog
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -112,7 +114,7 @@ func runCompile(args []string) error {
 			DumpMLIRPath:    *circtMLIR,
 			FIFOSource:      *fifoSrc,
 		}
-		res, err := backend.EmitVerilog(design, *output, opts)
+		res, err := emitVerilog(design, *output, opts)
 		if err != nil {
 			return err
 		}
@@ -372,7 +374,7 @@ func runSim(args []string) error {
 		return fmt.Errorf("simulation requires --fifo-src when design contains channels")
 	}
 
-	res, err := backend.EmitVerilog(design, svPath, opts)
+	res, err := emitVerilog(design, svPath, opts)
 	if err != nil {
 		return err
 	}
@@ -476,9 +478,8 @@ func runBuiltinVerilator(mainPath string, auxPaths []string, expectPath string, 
 	if err := os.WriteFile(driverPath, []byte(driver), 0o644); err != nil {
 		return fmt.Errorf("write verilator driver: %w", err)
 	}
-	xargsShim := filepath.Join(tempDir, "xargs")
-	if err := os.WriteFile(xargsShim, []byte(xargsShimScript), 0o755); err != nil {
-		return fmt.Errorf("write xargs shim: %w", err)
+	if _, err := installXargsShim(tempDir); err != nil {
+		return err
 	}
 
 	objDir := filepath.Join(tempDir, "obj_dir")
