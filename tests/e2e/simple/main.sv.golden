@@ -1,0 +1,9 @@
+module main(
+  input clk,
+        rst
+);
+
+  wire [31:0] _GEN = 32'h1;
+  wire [15:0] _GEN_0 = 16'h2;
+endmodule
+

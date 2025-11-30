@@ -1,0 +1,7 @@
+module main(
+  input clk,
+        rst
+);
+
+endmodule
+

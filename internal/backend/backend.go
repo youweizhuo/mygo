@@ -22,6 +22,9 @@ type Options struct {
 	// PassPipeline holds the circt-opt --pass-pipeline string that runs before
 	// --export-verilog.
 	PassPipeline string
+	// LoweringOptions holds the comma-separated string passed to
+	// --lowering-options to control ExportVerilog lowering behavior.
+	LoweringOptions string
 	// DumpMLIRPath writes the MLIR handed to CIRCT to the provided path when
 	// non-empty.
 	DumpMLIRPath string
@@ -73,7 +76,7 @@ func EmitVerilog(design *ir.Design, outputPath string, opts Options) (Result, er
 
 	currentInput := mlirPath
 	exportOutput := filepath.Join(tempDir, "design.export.mlir")
-	if err := runCirctExportVerilog(optPath, opts.PassPipeline, currentInput, exportOutput, outputPath); err != nil {
+	if err := runCirctExportVerilog(optPath, opts.PassPipeline, opts.LoweringOptions, currentInput, exportOutput, outputPath); err != nil {
 		return Result{}, err
 	}
 	currentInput = exportOutput
@@ -98,8 +101,12 @@ func EmitVerilog(design *ir.Design, outputPath string, opts Options) (Result, er
 	return res, nil
 }
 
-func runCirctExportVerilog(binary, pipeline, inputPath, mlirOutputPath, verilogOutputPath string) error {
-	args := []string{inputPath, "-o", mlirOutputPath, "--export-verilog"}
+func runCirctExportVerilog(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+	args := []string{inputPath, "-o", mlirOutputPath}
+	if loweringOptions != "" {
+		args = append(args, "--test-apply-lowering-options=options="+loweringOptions)
+	}
+	args = append(args, "--export-verilog")
 	if pipeline != "" {
 		args = append(args, "--pass-pipeline="+pipeline)
 	}
