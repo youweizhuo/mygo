@@ -1,17 +1,36 @@
 # Go build artifacts
 bin/
+dist/
+build/
 *.exe
+*.dll
+*.so
+*.dylib
+*.test
 *.out
+
+# Coverage & profiling
+coverage*.out
+*.coverprofile
+*.prof
+*.pprof
 
 # Go module build caches (local)
 .cache/
 .gocache/
 
-# Editor cruft
+# Editor/IDE settings
 .DS_Store
 *.swp
+.idea/
+.vscode/
+
+# Environment overrides
+.env
+.env.*
 
 # Large third-party mirrors cloned locally
 third_party/llgo/tmp/
 
+# Generated MLIR/Verilog snapshots
 *.mlir
