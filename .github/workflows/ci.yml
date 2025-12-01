@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO111MODULE: on
+
+jobs:
+  lint-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Ensure go.mod is tidy
+        run: |
+          go mod tidy
+          go mod verify
+          git diff --exit-code go.mod go.sum || {
+            echo "::error ::go.mod/go.sum are not up to date. Run scripts/tidy.sh locally."
+            exit 1
+          }
+
+      - name: Check formatting
+        run: |
+          files=$(git ls-files '*.go')
+          if [ -n "$files" ]; then
+            fmt_out=$(gofmt -l $files)
+            if [ -n "$fmt_out" ]; then
+              echo "::error ::gofmt found unformatted files:"
+              echo "$fmt_out"
+              exit 1
+            fi
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  build:
+    name: Build CLI artifact
+    runs-on: ${{ matrix.os }}
+    needs: lint-test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: mygo-linux-amd64
+          - os: macos-latest
+            artifact: mygo-macos-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build CLI
+        run: |
+          mkdir -p dist
+          go build -trimpath -o dist/${{ matrix.artifact }} ./cmd/mygo
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
