@@ -30,7 +30,8 @@ coverage*.out
 .env.*
 
 # Large third-party mirrors cloned locally
-third_party/llgo/tmp/
+third_party/llgo
+third_party/argo2verilog
 
 # Generated MLIR/Verilog snapshots
 *.mlir
