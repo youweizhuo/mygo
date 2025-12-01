@@ -111,7 +111,16 @@ go test ./tests/stages
 
 Each workload directory contains the original Go program plus whatever stage goldens you care about, so leaving out (say) `main.sim.golden` skips simulation while still validating MLIR and SV output. The harness exposes dedicated `TestMLIRGeneration`, `TestVerilogGeneration`, and `TestSimulation` suites so triaging a failure is straightforward, and includes targeted sims that exercise mismatch detection and artifact emission.
 
+`TestVerilogGeneration` and all simulation suites require `circt-opt` (for Verilog emission) and `verilator` (for the default simulator). When either tool is missing the tests log a skip so `go test ./...` still succeeds on a plain Go toolchain. Install both binaries and rerun `go test ./tests/stages` to exercise the full flow.
+
 The CLI itself has regression coverage in `cmd/mygo/sim_test.go`, which stubs the CIRCT binaries and executes the built-in Verilator flow (or any custom simulator you point it at).
+
+---
+
+## CI / CD & Dependency Hygiene
+
+- GitHub Actions (`.github/workflows/ci.yml`) runs `gofmt`, `go vet`, and `go test` for every PR and push to `main`. Successful runs also produce prebuilt `mygo` binaries as downloadable artifacts for Linux and macOS, so you can grab a fresh compiler without rebuilding locally.
+- Keep `go.mod` / `go.sum` in sync with `scripts/tidy.sh`, which runs `go mod tidy` and `go mod verify`. The CI workflow will fail if the module graph drifts, so run the script whenever dependencies change.
 
 ---
 
@@ -120,8 +129,14 @@ The CLI itself has regression coverage in `cmd/mygo/sim_test.go`, which stubs th
 - Historical READMEs (Phase 1–4 plans and the previous monolithic README) now live in `docs/arxiv/mygo_archive.md` for reference or citation in arXiv write-ups.
 - Templates, helper IP, and additional notes sit under `internal/backend/templates/` and `docs/`.
 
+See the Notice section below for third-party licensing notes and the current Apache-2.0 plan.
+
+## Notice
+
+- MyGO is on track to ship under Apache License 2.0; until the canonical LICENSE/NOTICE files land, treat all contributions as Apache-2.0 and keep provenance clear in commit messages.
+- `third_party/llgo` is sourced from llgo (Apache-2.0). Preserve their upstream LICENSE/NOTICE files when redistributing this repository.
+- The programs under `tests/stages/` were rewritten from scratch based on the original Argo ideas, so no GPL artifacts remain in-tree. Additional third-party code should be documented here when imported.
+
 ## Known Issues
 
 - `tests/stages/phi_loop` is a minimized workload that still triggers the current lack of phi lowering in the MLIR backend. Running the Verilog emission command documented in `docs/phi-repro.md` reproduces the failure until phis are lowered to concrete SSA values.
-
-For architectural or research deep dives, start with the archived document above; keep this README handy for daily work and onboarding.
