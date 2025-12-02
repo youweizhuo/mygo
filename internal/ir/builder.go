@@ -736,6 +736,8 @@ func (b *builder) signalForValue(v ssa.Value) *Signal {
 		return b.ensureValueSignal(val)
 	case *ssa.IndexAddr, *ssa.MakeInterface, *ssa.Slice, *ssa.MakeChan:
 		return nil
+	case *ssa.Call:
+		return nil
 	}
 	b.reporter.Warning(v.Pos(), fmt.Sprintf("no signal mapping for value %T", v))
 	return nil

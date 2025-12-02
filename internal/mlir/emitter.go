@@ -3,6 +3,7 @@ package mlir
 import (
 	"fmt"
 	"io"
+	"math/bits"
 	"os"
 	"sort"
 	"strconv"
@@ -557,6 +558,271 @@ func collectProcessSignals(proc *ir.Process) map[*ir.Signal]struct{} {
 	return used
 }
 
+type edgeKey struct {
+	pred *ir.BasicBlock
+	succ *ir.BasicBlock
+}
+
+type phiUpdate struct {
+	phi   *ir.PhiOperation
+	value *ir.Signal
+}
+
+type phiRegInfo struct {
+	phi       *ir.PhiOperation
+	regName   string
+	valueName string
+	typeStr   string
+}
+
+type fsmBuilder struct {
+	printer       *processPrinter
+	proc          *ir.Process
+	blockOrder    []*ir.BasicBlock
+	blockIDs      map[*ir.BasicBlock]int
+	doneID        int
+	stateWidth    int
+	stateType     string
+	stateConsts   map[int]string
+	stateRegInout string
+	stateValue    string
+	phiInfos      map[*ir.PhiOperation]*phiRegInfo
+	phiOrder      []*ir.PhiOperation
+	phiUpdates    map[edgeKey][]phiUpdate
+}
+
+func newFSMBuilder(printer *processPrinter, proc *ir.Process) *fsmBuilder {
+	if printer == nil || proc == nil {
+		return nil
+	}
+	builder := &fsmBuilder{
+		printer:     printer,
+		proc:        proc,
+		blockIDs:    make(map[*ir.BasicBlock]int),
+		stateConsts: make(map[int]string),
+		phiInfos:    make(map[*ir.PhiOperation]*phiRegInfo),
+		phiUpdates:  make(map[edgeKey][]phiUpdate),
+	}
+	for _, block := range proc.Blocks {
+		if block == nil {
+			continue
+		}
+		builder.blockOrder = append(builder.blockOrder, block)
+		builder.blockIDs[block] = len(builder.blockOrder) - 1
+	}
+	builder.doneID = len(builder.blockOrder)
+	stateCount := builder.doneID + 1
+	if stateCount <= 0 {
+		stateCount = 1
+	}
+	builder.stateWidth = bitWidth(stateCount)
+	if builder.stateWidth <= 0 {
+		builder.stateWidth = 1
+	}
+	builder.stateType = fmt.Sprintf("i%d", builder.stateWidth)
+	return builder
+}
+
+func bitWidth(count int) int {
+	if count <= 1 {
+		return 1
+	}
+	return bits.Len(uint(count - 1))
+}
+
+func (f *fsmBuilder) emitStateConstants() {
+	if f == nil {
+		return
+	}
+	for _, block := range f.blockOrder {
+		f.ensureStateConst(f.blockIDs[block])
+	}
+	f.ensureStateConst(f.doneID)
+}
+
+func (f *fsmBuilder) ensureStateConst(id int) string {
+	if name, ok := f.stateConsts[id]; ok {
+		return name
+	}
+	if f.printer == nil {
+		return ""
+	}
+	name := f.printer.freshValueName("state_const")
+	f.printer.printIndent()
+	fmt.Fprintf(f.printer.w, "%s = hw.constant %d : %s\n", name, id, f.stateType)
+	f.stateConsts[id] = name
+	return name
+}
+
+func (f *fsmBuilder) literalForID(id int) string {
+	if f.stateWidth <= 0 {
+		return fmt.Sprintf("b%d", id)
+	}
+	return fmt.Sprintf("b%0*b", f.stateWidth, id)
+}
+
+func (f *fsmBuilder) emitStateRegister() {
+	if f == nil || len(f.blockOrder) == 0 || f.printer == nil {
+		return
+	}
+	entryConst := f.ensureStateConst(0)
+	f.stateRegInout = f.printer.freshValueName("state_reg")
+	f.printer.printIndent()
+	fmt.Fprintf(f.printer.w, "%s = sv.reg : !hw.inout<%s>\n", f.stateRegInout, f.stateType)
+	if entryConst != "" {
+		f.printer.printIndent()
+		fmt.Fprintln(f.printer.w, "sv.initial {")
+		f.printer.indent++
+		f.printer.printIndent()
+		fmt.Fprintf(f.printer.w, "sv.bpassign %s, %s : %s\n", f.stateRegInout, entryConst, f.stateType)
+		f.printer.indent--
+		f.printer.printIndent()
+		fmt.Fprintln(f.printer.w, "}")
+	}
+	f.stateValue = f.printer.freshValueName("state")
+	f.printer.printIndent()
+	fmt.Fprintf(f.printer.w, "%s = sv.read_inout %s : !hw.inout<%s>\n", f.stateValue, f.stateRegInout, f.stateType)
+}
+
+func (f *fsmBuilder) registerPhi(block *ir.BasicBlock, phi *ir.PhiOperation) {
+	if f == nil || f.printer == nil || block == nil || phi == nil || phi.Dest == nil {
+		return
+	}
+	if _, exists := f.phiInfos[phi]; exists {
+		return
+	}
+	typeStr := typeString(phi.Dest.Type)
+	regName := f.printer.freshValueName("phi_reg")
+	f.printer.printIndent()
+	fmt.Fprintf(f.printer.w, "%s = sv.reg : !hw.inout<%s>\n", regName, typeStr)
+	destName := f.printer.bindSSA(phi.Dest)
+	f.printer.printIndent()
+	fmt.Fprintf(f.printer.w, "%s = sv.read_inout %s : !hw.inout<%s>\n", destName, regName, typeStr)
+	info := &phiRegInfo{
+		phi:       phi,
+		regName:   regName,
+		valueName: destName,
+		typeStr:   typeStr,
+	}
+	f.phiInfos[phi] = info
+	f.phiOrder = append(f.phiOrder, phi)
+	for _, incoming := range phi.Incomings {
+		if incoming.Block == nil || incoming.Value == nil {
+			continue
+		}
+		key := edgeKey{pred: incoming.Block, succ: block}
+		f.phiUpdates[key] = append(f.phiUpdates[key], phiUpdate{
+			phi:   phi,
+			value: incoming.Value,
+		})
+	}
+}
+
+func (f *fsmBuilder) emitControlLogic() {
+	if f == nil || f.printer == nil || f.stateRegInout == "" || f.stateValue == "" {
+		return
+	}
+	clk := f.printer.portRef("clk")
+	f.printer.printIndent()
+	fmt.Fprintf(f.printer.w, "sv.always posedge %s {\n", clk)
+	f.printer.indent++
+	if len(f.blockOrder) > 0 {
+		f.printer.printIndent()
+		fmt.Fprintf(f.printer.w, "sv.case %s : %s\n", f.stateValue, f.stateType)
+		for _, block := range f.blockOrder {
+			id := f.blockIDs[block]
+			f.printer.printIndent()
+			fmt.Fprintf(f.printer.w, "case %s: {\n", f.literalForID(id))
+			f.printer.indent++
+			f.emitBlockCase(block)
+			f.printer.indent--
+			f.printer.printIndent()
+			fmt.Fprintln(f.printer.w, "}")
+		}
+		f.printer.printIndent()
+		fmt.Fprintf(f.printer.w, "case %s: {\n", f.literalForID(f.doneID))
+		f.printer.indent++
+		f.printer.printIndent()
+		fmt.Fprintf(f.printer.w, "sv.passign %s, %s : %s\n", f.stateRegInout, f.stateValue, f.stateType)
+		f.printer.indent--
+		f.printer.printIndent()
+		fmt.Fprintln(f.printer.w, "}")
+		f.printer.printIndent()
+		fmt.Fprintln(f.printer.w, "default: {")
+		f.printer.indent++
+		f.printer.printIndent()
+		fmt.Fprintf(f.printer.w, "sv.passign %s, %s : %s\n", f.stateRegInout, f.stateValue, f.stateType)
+		f.printer.indent--
+		f.printer.printIndent()
+		fmt.Fprintln(f.printer.w, "}")
+	}
+	f.printer.indent--
+	f.printer.printIndent()
+	fmt.Fprintln(f.printer.w, "}")
+}
+
+func (f *fsmBuilder) emitBlockCase(block *ir.BasicBlock) {
+	if block == nil {
+		return
+	}
+	switch term := block.Terminator.(type) {
+	case *ir.BranchTerminator:
+		cond := f.printer.valueRef(term.Cond)
+		if cond == "%unknown" || cond == "" {
+			cond = f.printer.boolConst(false)
+		}
+		f.printer.printIndent()
+		fmt.Fprintf(f.printer.w, "sv.if %s {\n", cond)
+		f.printer.indent++
+		f.emitTransition(block, term.True)
+		f.printer.indent--
+		f.printer.printIndent()
+		fmt.Fprintln(f.printer.w, "} else {")
+		f.printer.indent++
+		f.emitTransition(block, term.False)
+		f.printer.indent--
+		f.printer.printIndent()
+		fmt.Fprintln(f.printer.w, "}")
+	case *ir.JumpTerminator:
+		f.emitTransition(block, term.Target)
+	case *ir.ReturnTerminator:
+		f.emitTransition(block, nil)
+	default:
+		// No explicit control transfer; hold previous assignments.
+	}
+}
+
+func (f *fsmBuilder) emitTransition(pred, succ *ir.BasicBlock) {
+	if f == nil || f.printer == nil {
+		return
+	}
+	targetID := f.doneID
+	if succ != nil {
+		if id, ok := f.blockIDs[succ]; ok {
+			targetID = id
+		}
+	}
+	targetConst := f.ensureStateConst(targetID)
+	f.printer.printIndent()
+	fmt.Fprintf(f.printer.w, "sv.passign %s, %s : %s\n", f.stateRegInout, targetConst, f.stateType)
+	if succ == nil {
+		return
+	}
+	key := edgeKey{pred: pred, succ: succ}
+	for _, update := range f.phiUpdates[key] {
+		info := f.phiInfos[update.phi]
+		if info == nil || update.value == nil {
+			continue
+		}
+		val := f.printer.valueRef(update.value)
+		if val == "" || val == "%unknown" {
+			continue
+		}
+		f.printer.printIndent()
+		fmt.Fprintf(f.printer.w, "sv.passign %s, %s : %s\n", info.regName, val, info.typeStr)
+	}
+}
+
 type processPrinter struct {
 	w             io.Writer
 	indent        int
@@ -569,6 +835,8 @@ type processPrinter struct {
 	usedSignals   map[*ir.Signal]struct{}
 	boolConsts    map[bool]string
 	stdoutFD      string
+	fsm           *fsmBuilder
+	seqClockName  string
 }
 
 func (p *processPrinter) resetState() {
@@ -589,6 +857,8 @@ func (p *processPrinter) resetState() {
 		p.boolConsts = make(map[bool]string)
 	}
 	p.stdoutFD = ""
+	p.fsm = nil
+	p.seqClockName = ""
 }
 
 func (p *processPrinter) emitProcess(proc *ir.Process) {
@@ -596,11 +866,24 @@ func (p *processPrinter) emitProcess(proc *ir.Process) {
 		return
 	}
 	p.emitConstants()
+	if processHasPhi(proc) {
+		p.fsm = newFSMBuilder(p, proc)
+		if p.fsm != nil {
+			p.fsm.emitStateConstants()
+			p.fsm.emitStateRegister()
+		}
+	} else {
+		p.fsm = nil
+	}
 	for _, block := range proc.Blocks {
 		for _, op := range block.Ops {
-			p.emitOperation(op, proc)
+			p.emitOperation(block, op, proc)
 		}
 	}
+	if p.fsm != nil {
+		p.fsm.emitControlLogic()
+	}
+	p.fsm = nil
 }
 
 func (p *processPrinter) emitConstants() {
@@ -626,7 +909,7 @@ func (p *processPrinter) emitConstants() {
 	}
 }
 
-func (p *processPrinter) emitOperation(op ir.Operation, proc *ir.Process) {
+func (p *processPrinter) emitOperation(block *ir.BasicBlock, op ir.Operation, proc *ir.Process) {
 	switch o := op.(type) {
 	case *ir.BinOperation:
 		left := p.valueRef(o.Left)
@@ -643,7 +926,7 @@ func (p *processPrinter) emitOperation(op ir.Operation, proc *ir.Process) {
 	case *ir.ConvertOperation:
 		p.emitConvertOperation(o)
 	case *ir.AssignOperation:
-		clk := p.portRef("clk")
+		clk := p.seqClock()
 		src := p.valueRef(o.Value)
 		dest := p.bindSSA(o.Dest)
 		p.printIndent()
@@ -729,13 +1012,43 @@ func (p *processPrinter) emitOperation(op ir.Operation, proc *ir.Process) {
 			typeString(o.Dest.Type),
 		)
 	case *ir.PhiOperation:
-		p.printIndent()
-		fmt.Fprintf(p.w, "// phi %s has %d incoming values\n", sanitize(o.Dest.Name), len(o.Incomings))
+		if p.fsm != nil {
+			p.fsm.registerPhi(block, o)
+		} else {
+			p.printIndent()
+			fmt.Fprintf(p.w, "// phi %s has %d incoming values\n", sanitize(o.Dest.Name), len(o.Incomings))
+		}
 	case *ir.PrintOperation:
 		p.emitPrintOperation(o)
 	default:
 		// skip unknown operations
 	}
+}
+
+func (p *processPrinter) seqClock() string {
+	if p.seqClockName != "" {
+		return p.seqClockName
+	}
+	clk := p.portRef("clk")
+	name := p.freshValueName("clk_seq")
+	p.printIndent()
+	fmt.Fprintf(p.w, "%s = seq.to_clock %s\n", name, clk)
+	p.seqClockName = name
+	return name
+}
+
+func processHasPhi(proc *ir.Process) bool {
+	if proc == nil {
+		return false
+	}
+	for _, block := range proc.Blocks {
+		for _, op := range block.Ops {
+			if _, ok := op.(*ir.PhiOperation); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *processPrinter) assignConst(sig *ir.Signal) string {
@@ -1084,13 +1397,19 @@ func (e *emitter) emitFifoExterns() {
 	sort.Strings(names)
 	for _, name := range names {
 		info := e.fifoDecls[name]
-		elemInout := inoutTypeString(info.elemType)
+		elemType := typeString(info.elemType)
 		e.printIndent()
-		fmt.Fprintf(e.w, "hw.module @%s(in %%clk: i1, in %%rst: i1, in %%in_data: %s, in %%in_valid: !hw.inout<i1>, in %%in_ready: !hw.inout<i1>, in %%out_data: %s, in %%out_valid: !hw.inout<i1>, in %%out_ready: !hw.inout<i1>) external\n",
+		fmt.Fprintf(e.w, "hw.module @%s(in %%clk: i1, in %%rst: i1, inout %%in_data: %s, inout %%in_valid: i1, inout %%in_ready: i1, inout %%out_data: %s, inout %%out_valid: i1, inout %%out_ready: i1) {\n",
 			info.moduleName,
-			elemInout,
-			elemInout,
+			elemType,
+			elemType,
 		)
+		e.indent++
+		e.printIndent()
+		fmt.Fprintln(e.w, "hw.output")
+		e.indent--
+		e.printIndent()
+		fmt.Fprintln(e.w, "}")
 	}
 }
 

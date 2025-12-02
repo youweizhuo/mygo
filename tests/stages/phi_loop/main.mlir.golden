@@ -1,0 +1,69 @@
+module {
+  hw.module @main(in %clk: i1, in %rst: i1) {
+    // channel t0 depth=1 type=i32
+    %chan_t0_wdata = sv.wire : !hw.inout<i32>
+    %chan_t0_wvalid = sv.wire : !hw.inout<i1>
+    %chan_t0_wready = sv.wire : !hw.inout<i1>
+    %chan_t0_rdata = sv.wire : !hw.inout<i32>
+    %chan_t0_rvalid = sv.wire : !hw.inout<i1>
+    %chan_t0_rready = sv.wire : !hw.inout<i1>
+    // channel t0 occupancy 1/1
+    //   producer producer stage 1
+    hw.instance "t0_fifo" @mygo_fifo_i32_d1(clk: %clk : i1, rst: %rst : i1, in_data: %chan_t0_wdata : !hw.inout<i32>, in_valid: %chan_t0_wvalid : !hw.inout<i1>, in_ready: %chan_t0_wready : !hw.inout<i1>, out_data: %chan_t0_rdata : !hw.inout<i32>, out_valid: %chan_t0_rvalid : !hw.inout<i1>, out_ready: %chan_t0_rready : !hw.inout<i1>) -> ()
+    // spawn producer stage=1 parent_stage=0
+    hw.instance "producer_inst0" @main__proc_producer(clk: %clk : i1, rst: %rst : i1, chan_t0_wdata: %chan_t0_wdata : !hw.inout<i32>, chan_t0_wvalid: %chan_t0_wvalid : !hw.inout<i1>, chan_t0_wready: %chan_t0_wready : !hw.inout<i1>) -> ()
+    hw.output
+  }
+  hw.module @main__proc_producer(in %clk: i1, in %rst: i1, inout %chan_t0_wdata: i32, inout %chan_t0_wvalid: i1, inout %chan_t0_wready: i1) {
+    %c0 = hw.constant 0 : i32
+    %c1 = hw.constant 4 : i32
+    %c2 = hw.constant 1 : i32
+    %state_const3 = hw.constant 0 : i3
+    %state_const4 = hw.constant 1 : i3
+    %state_const5 = hw.constant 2 : i3
+    %state_const6 = hw.constant 3 : i3
+    %state_const7 = hw.constant 4 : i3
+    %state_reg8 = sv.reg : !hw.inout<i3>
+    sv.initial {
+      sv.bpassign %state_reg8, %state_const3 : i3
+    }
+    %state9 = sv.read_inout %state_reg8 : !hw.inout<i3>
+    %phi_reg10 = sv.reg : !hw.inout<i32>
+    %v11 = sv.read_inout %phi_reg10 : !hw.inout<i32>
+    %v12 = comb.icmp slt %v11, %c1 : i32
+    sv.assign %chan_t0_wdata, %v11 : i32
+    %c_bool_0 = hw.constant true
+    sv.assign %chan_t0_wvalid, %c_bool_0 : i1
+    %v13 = comb.add %v11, %c2 : i32
+    sv.always posedge %clk {
+      sv.case %state9 : i3
+      case b000: {
+        sv.passign %state_reg8, %state_const4 : i3
+        sv.passign %phi_reg10, %c0 : i32
+      }
+      case b001: {
+        sv.if %v12 {
+          sv.passign %state_reg8, %state_const6 : i3
+        } else {
+          sv.passign %state_reg8, %state_const5 : i3
+        }
+      }
+      case b010: {
+        sv.passign %state_reg8, %state_const7 : i3
+      }
+      case b011: {
+        sv.passign %state_reg8, %state_const4 : i3
+        sv.passign %phi_reg10, %v13 : i32
+      }
+      case b100: {
+        sv.passign %state_reg8, %state9 : i3
+      }
+      default: {
+        sv.passign %state_reg8, %state9 : i3
+      }
+    }
+  }
+  hw.module @mygo_fifo_i32_d1(in %clk: i1, in %rst: i1, inout %in_data: i32, inout %in_valid: i1, inout %in_ready: i1, inout %out_data: i32, inout %out_valid: i1, inout %out_ready: i1) {
+    hw.output
+  }
+}

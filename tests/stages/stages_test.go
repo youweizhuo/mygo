@@ -37,14 +37,14 @@ var testCases = []testCase{
 	{Name: "comb_bitwise", SimCycles: 1},
 	{Name: "comb_concat", SimCycles: 1},
 	{Name: "simple_channel", NeedsFIFO: true},
-	{Name: "phi_loop"},
+	{Name: "phi_loop", NeedsFIFO: true},
 	{Name: "pipeline1", NeedsFIFO: true},
 	{Name: "pipeline2", NeedsFIFO: true},
 	{Name: "router_csp", NeedsFIFO: true},
 }
 
 var (
-	circtOptAvailable = checkBinary("circt-opt")
+	circtOptAvailable  = checkBinary("circt-opt")
 	verilatorAvailable = checkBinary("verilator")
 )
 
