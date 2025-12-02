@@ -134,7 +134,6 @@ See the Notice section below for third-party licensing notes and the current Apa
 ## Notice
 
 - MyGO is on track to ship under Apache License 2.0; until the canonical LICENSE/NOTICE files land, treat all contributions as Apache-2.0 and keep provenance clear in commit messages.
-- `third_party/llgo` is sourced from llgo (Apache-2.0). Preserve their upstream LICENSE/NOTICE files when redistributing this repository.
 - The programs under `tests/stages/` were rewritten from scratch based on the original Argo ideas, so no GPL artifacts remain in-tree. Additional third-party code should be documented here when imported.
 
 ## Known Issues
