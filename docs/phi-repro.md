@@ -31,6 +31,18 @@ go run ./cmd/mygo compile \
     tests/stages/phi_loop/main.go
 ```
 
+And the full simulator path mirrors the stage harness:
+
+```bash
+PATH=$PWD/third_party/circt/build/bin:$PATH \
+GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp \
+go run ./cmd/mygo sim \
+    --sim-max-cycles 64 \
+    --expect tests/stages/phi_loop/main.sim.golden \
+    --fifo-src=internal/backend/templates/simple_fifo.sv \
+    tests/stages/phi_loop/main.go
+```
+
 The `docs/phi-repro.md` file remains as a regression note; if either command
 above fails, please update this document with the new failure signature.
 
