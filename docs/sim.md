@@ -22,7 +22,7 @@ Workloads live in `tests/stages/<case>/` with the following optional files:
 | `main.mlir.golden` | Reference MLIR for `compile -emit=mlir`. |
 | `main.sv.golden` | Reference SystemVerilog for `compile -emit=verilog`. |
 | `main.sim.golden` | Reference simulator stdout for `sim`. |
-| `expected.sim` | Alternate name auto-detected when a single Go file is passed to `mygo sim`. |
+
 
 `tests/stages/stages_test.go` wires these assets into three suites plus targeted regressions:
 
@@ -56,7 +56,7 @@ Use `--keep-artifacts` to preserve the temp directory; pair it with `--verilog-o
 | `--fifo-src` | Required when the design contains channels; accepts a file or directory similar to the compile command. |
 | `--sim-max-cycles` | Max cycles for the built-in driver before declaring a timeout (default 16). Must be > 0. |
 | `--sim-reset-cycles` | Number of cycles to hold reset high at startup (default 2). |
-| `--expect` | Path to a golden stdout trace. Auto-populated when an adjacent `expected.sim` exists. |
+| `--expect` | Path to a golden stdout trace. |
 
 ## Workflow Notes for Contributors
 
