@@ -1,0 +1,24 @@
+module {{.Name}}(
+  input wire clk,
+  input wire rst,
+  inout wire {{.DataRange}}in_data,
+  inout wire in_valid,
+  inout wire in_ready,
+  inout wire {{.DataRange}}out_data,
+  inout wire out_valid,
+  inout wire out_ready
+);
+  mygo_fifo #(
+    .WIDTH({{.Width}}),
+    .DEPTH({{.Depth}})
+  ) fifo_impl (
+    .clk(clk),
+    .rst(rst),
+    .in_data(in_data),
+    .in_valid(in_valid),
+    .in_ready(in_ready),
+    .out_data(out_data),
+    .out_valid(out_valid),
+    .out_ready(out_ready)
+  );
+endmodule

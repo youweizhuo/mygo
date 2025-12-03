@@ -1,7 +1,8 @@
 // Simple behavioral FIFO for local testing.
 // This template is not referenced by the backend directly; point --fifo-src at
 // this file (or copy it) when you need a known-good implementation.
-module mygo_fifo_iWIDTH_dDEPTH #(
+// mygo:fifo_template
+module mygo_fifo #(
   parameter integer WIDTH = 32,
   parameter integer DEPTH = 4,
   parameter integer ADDR_BITS = (DEPTH <= 1) ? 1 : $clog2(DEPTH),
@@ -21,7 +22,7 @@ module mygo_fifo_iWIDTH_dDEPTH #(
   reg [ADDR_BITS-1:0] rptr;
   reg [COUNT_BITS-1:0] count;
 
-  wire ready_int = (count < DEPTH);
+  wire ready_int = (count < COUNT_BITS'(DEPTH));
   wire valid_int = (count != 0);
   wire push = in_valid & ready_int;
   wire pop  = valid_int & out_ready;
@@ -40,7 +41,7 @@ module mygo_fifo_iWIDTH_dDEPTH #(
         mem[wptr] <= in_data;
         if (DEPTH == 1) begin
           wptr <= {ADDR_BITS{1'b0}};
-        end else if (wptr == DEPTH - 1) begin
+        end else if (wptr == ADDR_BITS'(DEPTH - 1)) begin
           wptr <= {ADDR_BITS{1'b0}};
         end else begin
           wptr <= wptr + 1'b1;
@@ -49,7 +50,7 @@ module mygo_fifo_iWIDTH_dDEPTH #(
       if (pop) begin
         if (DEPTH == 1) begin
           rptr <= {ADDR_BITS{1'b0}};
-        end else if (rptr == DEPTH - 1) begin
+        end else if (rptr == ADDR_BITS'(DEPTH - 1)) begin
           rptr <= {ADDR_BITS{1'b0}};
         end else begin
           rptr <= rptr + 1'b1;

@@ -191,6 +191,44 @@ func TestEmitVerilogEmitsAuxiliaryFifoFile(t *testing.T) {
 	}
 }
 
+func TestEmitVerilogGeneratesFifoWrappers(t *testing.T) {
+	design := testDesignWithChannel()
+	tmp := t.TempDir()
+	opt := touchFakeBinary(t, tmp)
+	stubRunExport(t, func(binary, pipeline, loweringOptions, inputPath, mlirOutputPath, verilogOutputPath string) error {
+		if err := copyFile(inputPath, mlirOutputPath); err != nil {
+			return err
+		}
+		return os.WriteFile(verilogOutputPath, []byte(readBackendTestdata(t, "verilog_with_fifo.sv")), 0o644)
+	})
+	fifoSrc := filepath.Join(tmp, "fifo_template.sv")
+	if err := os.WriteFile(fifoSrc, []byte(readBackendTestdata(t, "fifo_template.sv")), 0o644); err != nil {
+		t.Fatalf("write fifo template: %v", err)
+	}
+	out := filepath.Join(tmp, "design.sv")
+	res, err := EmitVerilog(design, out, Options{
+		CIRCTOptPath: opt,
+		FIFOSource:   fifoSrc,
+	})
+	if err != nil {
+		t.Fatalf("EmitVerilog failed: %v", err)
+	}
+	if len(res.AuxPaths) != 1 {
+		t.Fatalf("expected one aux file, got %v", res.AuxPaths)
+	}
+	data, err := os.ReadFile(res.AuxPaths[0])
+	if err != nil {
+		t.Fatalf("read aux: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "mygo:fifo_template") {
+		t.Fatalf("expected fifo template body to be copied:\n%s", text)
+	}
+	if !strings.Contains(text, "module mygo_fifo_i32_d1") {
+		t.Fatalf("expected fifo wrapper to be generated:\n%s", text)
+	}
+}
+
 func TestEmitVerilogStripsAnnotatedFifoModules(t *testing.T) {
 	design := testDesignWithChannel()
 	tmp := t.TempDir()

@@ -61,6 +61,6 @@ Use `--keep-artifacts` to preserve the temp directory; pair it with `--verilog-o
 ## Workflow Notes for Contributors
 
 - **Matching goldens:** Use `--expect tests/stages/<case>/main.sim.golden` during repro steps so failing diffs show up immediately. Update the golden file only after confirming the new behavior.
-- **FIFO libraries:** Workloads marked `NeedsFIFO` in `stages_test.go` pass `--fifo-src internal/backend/templates/simple_fifo.sv`. Mirror this pattern when adding new channel-heavy programs.
+- **FIFO libraries:** Workloads marked `NeedsFIFO` in `stages_test.go` pass `--fifo-src internal/backend/templates/simple_fifo.sv`. The backend recognizes the `// mygo:fifo_template` marker inside this file and automatically appends per-channel wrapper modules (e.g. `mygo_fifo_i32_d1`) next to the emitted design, so the simulator sees concrete module names without any manual editing.
 - **Custom simulator wrappers:** Provide `--simulator=/path/to/wrapper` plus any `--sim-args`. MyGO passes the generated Verilog as positional arguments so wrappers can re-run Verilator, hook into commercial tools, etc.
 - **CI expectations:** `go test ./tests/stages` is the canonical way to exercise sim regressions. The suite enforces `circt-opt` + `verilator` availability before running expensive tests, so agents can safely call it even on machines without the full stack.
