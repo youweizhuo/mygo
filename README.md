@@ -37,9 +37,8 @@ These suites gracefully skip Verilog/Sim checks if `circt-opt` or `verilator` is
 ---
 
 ## Docs
-- `docs/compile.md` – complete `mygo compile` flag reference, FIFO guidance, and golden generation tips.
+- `docs/compile.md` – full `mygo compile` flag reference, SSA/IR dump modes, lint workflow notes, FIFO guidance, and golden generation tips.
 - `docs/sim.md` – simulator options, default Verilator flow, test structure, and how goldens/expectations work.
-- `docs/dump.md` – `dump-ssa`, `dump-ir`, and `lint` workflows for debugging and doc curation.
 - `docs/phi-repro.md` – current known issues such as the `phi_loop` workload.
 - `docs/backend/testdata.md` – catalog of backend SystemVerilog fixtures used in unit tests.
 - `docs/archive/` – historical plans and previous READMEs for citation only.
@@ -51,7 +50,7 @@ Always update the relevant doc instead of bloating this README when you add flag
 ## Repo Map
 | Path | Purpose |
 | ---- | ------- |
-| `cmd/mygo` | CLI entry point (`compile`, `sim`, `dump-*`, `lint`). |
+| `cmd/mygo` | CLI entry point (`compile`, `sim`, `lint`). `compile` now covers SSA/IR/MLIR/Verilog emission modes. |
 | `internal/frontend`, `internal/ir`, `internal/mlir`, `internal/backend` | Compiler stages from Go loading to CIRCT emission. |
 | `internal/backend/templates/simple_fifo.sv` | Reference FIFO implementation for channel-heavy workloads. |
 | `tests/stages` | Golden-based stage harness (see `docs/sim.md`). |
@@ -61,5 +60,5 @@ Always update the relevant doc instead of bloating this README when you add flag
 
 ## Working for Contributors & Agents
 - Run the **Workflow** commands before submitting or debugging a feature.
-- When documenting or reviewing new CLI flags, place the explanation in `docs/compile.md`, `docs/sim.md`, or `docs/dump.md` and link back here only if the quick path changes.
+- When documenting or reviewing new CLI flags, place the explanation in `docs/compile.md` or `docs/sim.md` and link back here only if the quick path changes.
 - Prefer `tests/stages/simple` for smoke coverage; introduce new workloads only when a behavior cannot be expressed there.

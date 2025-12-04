@@ -60,6 +60,76 @@ func TestParseSimArgs(t *testing.T) {
 	}
 }
 
+func TestSimulationTempRoot(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		inputs []string
+		setup  func(base string) []string
+		expect func(base string) string
+	}{
+		{
+			name: "file input chooses parent dir",
+			setup: func(base string) []string {
+				dir := filepath.Join(base, "proj")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				file := filepath.Join(dir, "main.go")
+				if err := os.WriteFile(file, []byte("package main\n"), 0o644); err != nil {
+					t.Fatalf("write file: %v", err)
+				}
+				return []string{file}
+			},
+			expect: func(base string) string {
+				return filepath.Join(base, "proj")
+			},
+		},
+		{
+			name: "dir input returned as-is",
+			setup: func(base string) []string {
+				dir := filepath.Join(base, "pkg")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				return []string{dir}
+			},
+			expect: func(base string) string {
+				return filepath.Join(base, "pkg")
+			},
+		},
+		{
+			name: "fallback to cwd when nothing exists",
+			setup: func(base string) []string {
+				return []string{filepath.Join(base, "missing", "main.go")}
+			},
+			expect: func(_ string) string {
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatalf("getwd: %v", err)
+				}
+				return cwd
+			},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			inputs := tc.setup(base)
+			got := simulationTempRoot(inputs)
+			want := tc.expect(base)
+			wantAbs, err := filepath.Abs(want)
+			if err != nil {
+				t.Fatalf("abs want: %v", err)
+			}
+			if got != wantAbs {
+				t.Fatalf("simulationTempRoot mismatch: got %s want %s", got, wantAbs)
+			}
+		})
+	}
+}
+
 func TestPrependPathToEnv(t *testing.T) {
 	dir := t.TempDir()
 	const oldPath = "/usr/bin"

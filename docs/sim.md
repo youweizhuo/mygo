@@ -36,12 +36,12 @@ Keep the goldens checked in—`go test ./tests/stages` will skip simulator-depen
 
 When `--simulator` is omitted, MyGO:
 
-1. Emits Verilog + aux FIFO/IP files into a temp dir (or `--verilog-out`).
+1. Emits Verilog + aux FIFO/IP files into a temp dir rooted alongside your workload (or `--verilog-out`).
 2. Renders `sim_main.cpp` with `--sim-max-cycles` and `--sim-reset-cycles` baked in.
 3. Invokes `verilator --cc --exe --build` with the generated bundle.
 4. Runs the produced `mygo_sim` binary and optionally checks stdout against `--expect` / auto goldens.
 
-Use `--keep-artifacts` to preserve the temp directory; pair it with `--verilog-out` to capture reusable HDL.
+Artifacts now stick around by default, so you can inspect them under `<workload>/mygo-sim-*`. Pass `--keep-artifacts=false` to opt back into auto-cleanup.
 
 ## Flag Reference
 
@@ -50,7 +50,7 @@ Use `--keep-artifacts` to preserve the temp directory; pair it with `--verilog-o
 | `-diag-format` | Diagnostic reporter format (`text` or `json`). |
 | `--circt-opt` / `--circt-pipeline` / `--circt-lowering-options` / `--circt-mlir` | Same semantics as the compile command but applied before simulation. |
 | `--verilog-out` | Path to write the Verilog bundle instead of a temp dir. Creates parent directories as needed. |
-| `--keep-artifacts` | Preserve the temp dir containing Verilog, Makefile, and simulator outputs. |
+| `--keep-artifacts` | Preserve the temp dir containing Verilog, Makefile, and simulator outputs (default `true`). |
 | `--simulator` | Custom executable to run instead of the built-in Verilator flow. Receives the main Verilog file plus aux files. |
 | `--sim-args` | Extra arguments (split by spaces) forwarded to the custom simulator. |
 | `--fifo-src` | Required when the design contains channels; accepts a file or directory similar to the compile command. |
